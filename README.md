@@ -161,9 +161,9 @@ resp = requests.post(f"http://127.0.0.1:9002/mcp/{peer_id}/execution",
 ```
 1. User dials Cymatic for the first time from their Nokia.
 2. VOICE AGENT detects the Caller ID (+91-XXXX...) has no associated account.
-3. VOICE AGENT → TTS: "Welcome to Cymatic. I see you're a new user. I'm setting up your secure vault now. Please say a 4-digit PIN to secure it."
-4. User says: "7 4 2 1"
-5. REASONING AGENT hashes the PIN.
+3. VOICE AGENT → TTS: "Welcome to Cymatic. I see you're a new user. I'm setting up your secure vault now. Please enter a PIN on your keypad to secure it, then press hash."
+4. User presses their PIN on the phone keypad (DTMF). Silent, never spoken aloud.
+5. REASONING AGENT hashes the DTMF PIN.
 6. EXECUTION AGENT calls KeeperHub API to dynamically provision a new Turnkey MPC wallet.
 7. EXECUTION AGENT mints a "Digital Twin" Voice Agent iNFT (ERC-7857) on the **0G Chain** representing the caller.
 8. Cymatic maps the Caller ID + Hashed PIN to the new Turnkey address and stores initial encrypted context in **0G Storage** (KV format).
@@ -242,12 +242,13 @@ An empty wallet is useless. If the user doesn't have internet, they can't use Bi
 
 3. REASONING AGENT:
    - LLM detects high-risk action (token transfer)
+   - LLM detects high-risk action (token transfer)
    - Sends back to Voice Agent via AXL: "Confirm needed"
    - Response: "You want to send 50 USDC to vitalik.eth on Base.
-     Please say your PIN to confirm."
+     Please enter your PIN on your keypad to confirm, then press hash."
 
 4. VOICE AGENT → TTS → user hears confirmation prompt
-   User says: "7 4 2 1"
+   User enters PIN silently via DTMF keypad (never spoken aloud)
    Voice Agent verifies PIN hash locally
 
 5. REASONING AGENT → (AXL MCP) → EXECUTION AGENT
@@ -273,35 +274,68 @@ An empty wallet is useless. If the user doesn't have internet, they can't use Bi
 
 ## How KeeperHub Is Used (Deep Integration)
 
+### What KeeperHub Workflows Actually Are
+
+KeeperHub workflows are **not Python scripts**. They are visual node/edge graphs defined as JSON and managed through KeeperHub's platform:
+
+- **Workflow format**: JSON nodes + edges (created in the visual builder, exported/imported as JSON, or programmatically created via API/MCP).
+- **Custom logic inside a workflow**: JavaScript (KeeperHub's Code plugin runs JS in a `node:vm` sandbox — no Python, no `require`).
+- **Python**: that's your agent code living in `platform_agents/`. It calls the KeeperHub MCP/API to create, trigger, and monitor workflows. The workflows themselves live on KeeperHub's platform.
+
+Example workflow node structure (what you POST to the API / what MCP creates):
+```json
+{
+  "id": "transfer-1",
+  "type": "action",
+  "data": {
+    "label": "Transfer USDC",
+    "type": "action",
+    "config": {
+      "actionType": "web3/transfer-token",
+      "network": "8453",
+      "toAddress": "{{Trigger.to}}",
+      "tokenAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "amount": "{{Trigger.amount}}",
+      "walletId": "{{env.TURNKEY_WALLET_ID}}"
+    },
+    "status": "idle"
+  }
+}
+```
+
 ### MCP Server Integration
 
-The Execution Agent connects to KeeperHub's MCP server and exposes KeeperHub's tools as its own AXL MCP services:
+KeeperHub MCP is not a vibe-coding helper — it is a full operations interface exposing 19 tools covering CRUD and execution for your deployed workflows. The Execution Agent connects to it with an org-scoped API key and calls it like an internal RPC:
 
 ```python
-# Execution Agent's internal setup
-# Connects to KeeperHub MCP at https://app.keeperhub.com/mcp
-# with API key authentication (kh_xxxxx)
+# platform_agents/execution_agent/main.py
+# This is YOUR agent code (Python), running off-chain.
+# It calls KeeperHub MCP to manage/run workflows that live on KeeperHub's platform.
 
 KEEPERHUB_MCP = "https://app.keeperhub.com/mcp"
-KEEPERHUB_KEY = "kh_your_org_key"
+KEEPERHUB_KEY = "kh_your_org_key"  # org-scoped, kh_ prefix
 
-# When another agent calls via AXL, the Execution Agent proxies to KeeperHub:
-
+# When another Cymatic agent calls via AXL, the Execution Agent proxies to KeeperHub:
 async def handle_execute_tx(params):
-    # 1. Create workflow if needed
-    workflow = keeperhub.ai_generate_workflow(
-        prompt=f"Transfer {params['amount']} {params['token']} to {params['to']} on chain {params['chain']}"
-    )
-    
+    # 1. Find or create a pre-built workflow (created once, reused)
+    workflows = keeperhub_mcp.list_workflows()  # browse YOUR deployed workflows
+    wf = next((w for w in workflows if w["name"] == "transfer-erc20"), None)
+
+    if not wf:
+        # ai_generate_workflow creates a workflow on KeeperHub's platform
+        wf = keeperhub_mcp.ai_generate_workflow(
+            prompt=f"Transfer {params['amount']} {params['token']} to {params['to']} on chain {params['chain']}"
+        )
+
     # 2. Execute workflow
-    execution = keeperhub.execute_workflow(workflow_id=workflow['id'])
-    
+    execution = keeperhub_mcp.execute_workflow(workflow_id=wf["id"])
+
     # 3. Poll status
-    status = keeperhub.get_execution_status(execution_id=execution['id'])
-    
+    status = keeperhub_mcp.get_execution_status(execution_id=execution["id"])
+
     # 4. Get logs with tx hash
-    logs = keeperhub.get_execution_logs(execution_id=execution['id'])
-    
+    logs = keeperhub_mcp.get_execution_logs(execution_id=execution["id"])
+
     return logs
 ```
 
@@ -322,7 +356,10 @@ Deploy KeeperHub workflow templates for common DeFi operations:
 
 - The user **NEVER** creates a wallet out-of-band, downloads an app, or sees a seed phrase. If they have to touch a website, we've failed.
 - **Fully Automatic Provisioning:** On their first phone call, Cymatic uses the user's Caller ID to dynamically provision a KeeperHub **Turnkey MPC wallet** via the Execution Agent.
-- **Authentication:** Transactions are secured by the telecom layer (Carrier-verified Caller ID) + a spoken 4-digit PIN (hashed in 0G Storage) + optional Voice Print biometrics. 
+- **Authentication:** Two-factor — same model every bank phone line uses, but on-chain:
+  - **Factor 1 — Caller ID:** Carrier-verified at the telecom layer. Identifies which account and iNFT this session belongs to. Not used as a security control alone — just identity lookup.
+  - **Factor 2 — DTMF PIN:** User enters their PIN silently on the phone keypad (touch-tones). Never spoken aloud, never in the audio stream, not susceptible to ambient eavesdropping or voice recognition misparse. Twilio captures the DTMF digits server-side; only the bcrypt hash is stored in 0G Storage KV. Works on every phone on earth including feature phones with no internet.
+  - **Safety net — transaction limits:** Single-call transfer cap (e.g. $50) as a last-resort control. Draining a wallet requires multiple authenticated calls, each independently logged to 0G Storage.
 - **Non-custodial:** Keys stay in Turnkey's secure enclaves. Cymatic does not hold the private keys, but the user controls them purely via verified voice commands.
 - Perfect for phone-based auth where MetaMask or hardware wallets are impossible.
 
@@ -344,14 +381,30 @@ Chains: "1" (ETH), "8453" (Base), "42161" (Arbitrum), "137" (Polygon), "11155111
 
 ---
 
+## Deployment Model — What Runs Where
+
+Cymatic does **not** deploy agent processes directly on 0G Chain. 0G is infrastructure consumed by agents, not a hosting platform for long-running server processes. The split is:
+
+| Layer | What Runs There | What Cymatic Puts There |
+|---|---|---|
+| **0G Chain** | Smart contracts, on-chain state, settlements | iNFT identity contracts (ERC-7857), user-to-wallet mapping, token transfers |
+| **0G Compute** | Decentralized GPU inference marketplace (API calls, pay-per-use) | Whisper STT, TTS synthesis, LLM (Reasoning Agent) inference — billed per call |
+| **0G Storage** | Decentralized key-value + append-only log storage | KV: phone number → wallet/iNFT mapping; Log: conversation history, execution audit trail |
+| **0G DA** | Data availability layer | Scalable audit trail for A2A messages and on-chain KeeperHub transactions |
+| **KeeperHub** | Managed workflow execution platform (hosted, not self-run) | Pre-built DeFi workflows (check-aave-health, transfer-erc20, etc.) deployed as KeeperHub workflows |
+| **AXL Mesh** | P2P encrypted transport layer | Each agent runs as a separate AXL node; A2A calls are MCP over AXL |
+| **Off-chain servers** | Conventional containers / VPS / K8s — what your agents **actually run on** | Voice Agent, Reasoning Agent, Execution Agent, Monitoring Agent processes |
+
+Agents are regular Python services. They are off-chain processes that call into the above infrastructure layers. 0G Chain does not host agent processes — it is a settlement and identity layer.
+
 ## How 0G Is Used
 
 | 0G Component | How Cymatic Uses It |
 |---|---|
-| **Compute Network** | Runs the swarm's verifiable inference. Voice Node (STT/TTS models) and Reasoning Node (LLM like qwen3.6-plus/Llama) on 0G compute infrastructure. |
+| **Compute Network** | Inference API consumed by agents (pay-per-use). Voice Agent calls it for Whisper STT + TTS. Reasoning Agent calls it for LLM inference. This is a marketplace for GPU compute — 0G Compute does **not** host or run the agents themselves. |
 | **Storage (KV + Log)** | Real-time state (KV) maps phone numbers to wallet addresses / iNFTs. Append-only Logs store historical conversation context so memory persists across calls over years. |
 | **Data Availability** | Infinitely scalable audit trail. Every Agent-to-Agent AXL message and on-chain KeeperHub transaction is published for transparency and dispute resolution. |
-| **0G Chain (iNFTs)** | Phone numbers are mapped to their very own "Digital Twin" Voice Agent, minted as an **iNFT (ERC-7857)**. This gives the user total ownership of their AI brain and data, abstractly linked to their phone number. |
+| **0G Chain (iNFTs)** | Phone numbers are mapped to their very own "Digital Twin" Voice Agent, minted as an **iNFT (ERC-7857)**. This gives the user total ownership of their AI brain and data, abstractly linked to their phone number. iNFT is for identity only — general Cymatic agent logic does not deploy on-chain. |
 | **Service Marketplace** | Cymatic Voice + Reasoning agents are listed as services. Other builders can build Web2 API extensions on top of our swarm primitive. |
 
 ---
