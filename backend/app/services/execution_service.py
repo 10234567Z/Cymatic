@@ -7,6 +7,8 @@ from app.services.workflow_contracts import (
     CheckTokenBalanceInput,
     CheckTokenBalanceOutput,
     ExecutionStatus,
+    MonitorAaveHealthInput,
+    MonitorAaveHealthOutput,
     TransferErc20Input,
     TransferErc20Output,
     WorkflowError,
@@ -205,6 +207,52 @@ class ExecutionService:
             error=WorkflowError(
                 code="WORKFLOW_EXECUTION_FAILED",
                 message="check_aave_health workflow failed",
+                retryable=False,
+            ),
+        )
+
+    def monitor_aave_health(
+        self,
+        payload: MonitorAaveHealthInput,
+    ) -> WorkflowExecutionResult:
+        workflow = self._find_workflow_by_name(WorkflowName.MONITOR_AAVE_HEALTH.value)
+        if not workflow:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.MONITOR_AAVE_HEALTH,
+                status=ExecutionStatus.ERROR,
+                output_type="monitor_aave_health",
+                error=WorkflowError(
+                    code="WORKFLOW_NOT_FOUND",
+                    message="monitor_aave_health workflow is not deployed",
+                ),
+            )
+
+        execution = self._keeperhub.execute_workflow(workflow["id"])
+        execution_id = execution.get("executionId", "")
+        status_payload = self._keeperhub.get_execution_status(execution_id)
+        status = self._to_status(status_payload.get("status", "pending"))
+
+        output = MonitorAaveHealthOutput(
+            monitor_enabled=status in {ExecutionStatus.SUCCESS, ExecutionStatus.RUNNING},
+            workflow_id=workflow["id"],
+        )
+
+        if status in {ExecutionStatus.SUCCESS, ExecutionStatus.RUNNING, ExecutionStatus.PENDING}:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.MONITOR_AAVE_HEALTH,
+                status=status,
+                output_type="monitor_aave_health",
+                output=output,
+            )
+
+        return WorkflowExecutionResult(
+            workflow=WorkflowName.MONITOR_AAVE_HEALTH,
+            status=status,
+            output_type="monitor_aave_health",
+            output=output,
+            error=WorkflowError(
+                code="WORKFLOW_EXECUTION_FAILED",
+                message="monitor_aave_health workflow failed",
                 retryable=False,
             ),
         )
