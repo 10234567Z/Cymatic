@@ -1,7 +1,9 @@
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 
 
 class KeeperHubClientError(Exception):
@@ -31,6 +33,8 @@ class KeeperHubClient:
 
     @classmethod
     def from_env(cls) -> "KeeperHubClient":
+        backend_root = Path(__file__).resolve().parents[2]
+        load_dotenv(dotenv_path=backend_root / ".env", override=False)
         api_key = os.getenv("KEEPERHUB_API_KEY", "")
         base_url = os.getenv("KEEPERHUB_BASE_URL", "https://app.keeperhub.com")
         return cls(api_key=api_key, base_url=base_url)
