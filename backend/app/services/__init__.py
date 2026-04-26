@@ -11,6 +11,8 @@ from app.services.workflow_contracts import (
 	TransferErc20Input,
 	TransferErc20Output,
 	WorkflowError,
+	WorkflowDeploymentRecord,
+	WorkflowDeploymentReport,
 	WorkflowExecutionResult,
 	WorkflowName,
 )
@@ -30,5 +32,7 @@ __all__ = [
 	"MonitorAaveHealthInput",
 	"MonitorAaveHealthOutput",
 	"WorkflowError",
+	"WorkflowDeploymentRecord",
+	"WorkflowDeploymentReport",
 	"WorkflowExecutionResult",
 ]

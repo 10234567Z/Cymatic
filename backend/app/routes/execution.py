@@ -7,6 +7,7 @@ from app.services.workflow_contracts import (
     CheckTokenBalanceInput,
     MonitorAaveHealthInput,
     TransferErc20Input,
+    WorkflowDeploymentReport,
     WorkflowExecutionResult,
 )
 
@@ -43,3 +44,17 @@ def monitor_aave_health(
     service: ExecutionService = Depends(get_execution_service),
 ) -> WorkflowExecutionResult:
     return service.monitor_aave_health(payload)
+
+
+@router.get("/workflows", response_model=WorkflowDeploymentReport)
+def list_workflows(
+    service: ExecutionService = Depends(get_execution_service),
+) -> WorkflowDeploymentReport:
+    return service.list_workflow_deployments()
+
+
+@router.post("/workflows/sync", response_model=WorkflowDeploymentReport)
+def ensure_workflows(
+    service: ExecutionService = Depends(get_execution_service),
+) -> WorkflowDeploymentReport:
+    return service.ensure_workflow_deployments()

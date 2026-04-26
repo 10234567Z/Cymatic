@@ -101,3 +101,14 @@ class WorkflowExecutionResult(BaseModel):
         | None
     ) = None
     error: WorkflowError | None = None
+
+
+class WorkflowDeploymentRecord(BaseModel):
+    workflow: WorkflowName
+    exists: bool
+    created: bool = False
+    workflow_id: str | None = None
+
+
+class WorkflowDeploymentReport(BaseModel):
+    records: list[WorkflowDeploymentRecord]

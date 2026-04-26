@@ -15,6 +15,7 @@ class FakeKeeperHubClient:
         self._execution = execution or {"executionId": "exec_1"}
         self._status = status or {"status": "success"}
         self._logs = logs or {"data": []}
+        self.created_workflows = []
 
     def list_workflows(self):
         return self._workflows
@@ -28,8 +29,43 @@ class FakeKeeperHubClient:
     def get_execution_logs(self, execution_id):
         return self._logs
 
+    def create_workflow(self, name, description="", project_id=None):
+        created = {
+            "id": f"wf_created_{len(self.created_workflows) + 1}",
+            "name": name,
+            "description": description,
+        }
+        self.created_workflows.append(created)
+        self._workflows.append(created)
+        return created
+
 
 class ExecutionServiceTests(unittest.TestCase):
+    def test_list_workflow_deployments_marks_missing(self):
+        client = FakeKeeperHubClient(workflows=[{"id": "wf_1", "name": "transfer_erc20"}])
+        service = ExecutionService(client)
+
+        report = service.list_workflow_deployments()
+        by_name = {record.workflow.value: record for record in report.records}
+
+        self.assertTrue(by_name["transfer_erc20"].exists)
+        self.assertFalse(by_name["check_token_balance"].exists)
+        self.assertFalse(by_name["check_aave_health"].exists)
+        self.assertFalse(by_name["monitor_aave_health"].exists)
+
+    def test_ensure_workflow_deployments_creates_missing(self):
+        client = FakeKeeperHubClient(workflows=[{"id": "wf_1", "name": "transfer_erc20"}])
+        service = ExecutionService(client)
+
+        report = service.ensure_workflow_deployments()
+        by_name = {record.workflow.value: record for record in report.records}
+
+        self.assertFalse(by_name["transfer_erc20"].created)
+        self.assertTrue(by_name["check_token_balance"].created)
+        self.assertTrue(by_name["check_aave_health"].created)
+        self.assertTrue(by_name["monitor_aave_health"].created)
+        self.assertEqual(len(client.created_workflows), 3)
+
     def test_transfer_returns_not_found_when_workflow_missing(self):
         service = ExecutionService(FakeKeeperHubClient(workflows=[]))
         result = service.transfer_erc20(

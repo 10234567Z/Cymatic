@@ -12,6 +12,8 @@ from app.services.workflow_contracts import (
     TransferErc20Input,
     TransferErc20Output,
     WorkflowError,
+    WorkflowDeploymentRecord,
+    WorkflowDeploymentReport,
     WorkflowExecutionResult,
     WorkflowName,
 )
@@ -84,6 +86,47 @@ class ExecutionService:
                 retryable=False,
             ),
         )
+
+    def list_workflow_deployments(self) -> WorkflowDeploymentReport:
+        workflows = self._keeperhub.list_workflows()
+        records = [
+            self._deployment_record_for_name(workflows, workflow_name)
+            for workflow_name in WorkflowName
+        ]
+        return WorkflowDeploymentReport(records=records)
+
+    def ensure_workflow_deployments(self) -> WorkflowDeploymentReport:
+        workflows = self._keeperhub.list_workflows()
+        existing_by_name = {item.get("name"): item for item in workflows}
+        records: list[WorkflowDeploymentRecord] = []
+
+        for workflow_name in WorkflowName:
+            existing = existing_by_name.get(workflow_name.value)
+            if existing:
+                records.append(
+                    WorkflowDeploymentRecord(
+                        workflow=workflow_name,
+                        exists=True,
+                        created=False,
+                        workflow_id=existing.get("id"),
+                    )
+                )
+                continue
+
+            created = self._keeperhub.create_workflow(
+                name=workflow_name.value,
+                description=f"Cymatic managed workflow: {workflow_name.value}",
+            )
+            records.append(
+                WorkflowDeploymentRecord(
+                    workflow=workflow_name,
+                    exists=True,
+                    created=True,
+                    workflow_id=created.get("id"),
+                )
+            )
+
+        return WorkflowDeploymentReport(records=records)
 
     def check_token_balance(
         self,
@@ -260,6 +303,22 @@ class ExecutionService:
     def _find_workflow_by_name(self, workflow_name: str) -> dict[str, Any] | None:
         workflows = self._keeperhub.list_workflows()
         return next((item for item in workflows if item.get("name") == workflow_name), None)
+
+    @staticmethod
+    def _deployment_record_for_name(
+        workflows: list[dict[str, Any]],
+        workflow_name: WorkflowName,
+    ) -> WorkflowDeploymentRecord:
+        existing = next((item for item in workflows if item.get("name") == workflow_name.value), None)
+        if not existing:
+            return WorkflowDeploymentRecord(workflow=workflow_name, exists=False)
+
+        return WorkflowDeploymentRecord(
+            workflow=workflow_name,
+            exists=True,
+            created=False,
+            workflow_id=existing.get("id"),
+        )
 
     @staticmethod
     def _to_status(value: str) -> ExecutionStatus:
