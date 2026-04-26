@@ -1,3 +1,4 @@
+from app.services.keeperhub_client import KeeperHubClient, KeeperHubClientError
 from app.services.workflow_contracts import (
 	CheckAaveHealthInput,
 	CheckAaveHealthOutput,
@@ -14,6 +15,8 @@ from app.services.workflow_contracts import (
 )
 
 __all__ = [
+	"KeeperHubClient",
+	"KeeperHubClientError",
 	"WorkflowName",
 	"ExecutionStatus",
 	"TransferErc20Input",
