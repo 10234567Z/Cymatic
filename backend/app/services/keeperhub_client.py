@@ -62,8 +62,26 @@ class KeeperHubClient:
         name: str,
         description: str = "",
         project_id: str | None = None,
+        nodes: list[dict[str, Any]] | None = None,
+        edges: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"name": name, "description": description}
+        payload: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "nodes": nodes or [
+                {
+                    "id": "trigger-1",
+                    "type": "trigger",
+                    "data": {
+                        "label": "Manual Trigger",
+                        "type": "trigger",
+                        "config": {"triggerType": "Manual"},
+                        "status": "idle",
+                    },
+                }
+            ],
+            "edges": edges or [],
+        }
         if project_id:
             payload["projectId"] = project_id
         return self._request("POST", "/api/workflows/create", json=payload)
