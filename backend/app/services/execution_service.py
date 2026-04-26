@@ -2,6 +2,8 @@ from typing import Any
 
 from app.services.keeperhub_client import KeeperHubClient
 from app.services.workflow_contracts import (
+    CheckTokenBalanceInput,
+    CheckTokenBalanceOutput,
     ExecutionStatus,
     TransferErc20Input,
     TransferErc20Output,
@@ -79,6 +81,70 @@ class ExecutionService:
             ),
         )
 
+    def check_token_balance(
+        self,
+        payload: CheckTokenBalanceInput,
+    ) -> WorkflowExecutionResult:
+        workflow = self._find_workflow_by_name(WorkflowName.CHECK_TOKEN_BALANCE.value)
+        if not workflow:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.CHECK_TOKEN_BALANCE,
+                status=ExecutionStatus.ERROR,
+                output_type="check_token_balance",
+                error=WorkflowError(
+                    code="WORKFLOW_NOT_FOUND",
+                    message="check_token_balance workflow is not deployed",
+                ),
+            )
+
+        execution = self._keeperhub.execute_workflow(workflow["id"])
+        execution_id = execution.get("executionId", "")
+        status_payload = self._keeperhub.get_execution_status(execution_id)
+        status = self._to_status(status_payload.get("status", "pending"))
+
+        if status in {ExecutionStatus.PENDING, ExecutionStatus.RUNNING}:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.CHECK_TOKEN_BALANCE,
+                status=status,
+                output_type="check_token_balance",
+                output=CheckTokenBalanceOutput(
+                    raw_balance="0",
+                    execution_id=execution_id,
+                    workflow_id=workflow["id"],
+                ),
+            )
+
+        logs = self._keeperhub.get_execution_logs(execution_id)
+        extracted = self._extract_balance_payload(logs)
+        output = CheckTokenBalanceOutput(
+            raw_balance=extracted.get("raw_balance", "0"),
+            formatted_balance=extracted.get("formatted_balance"),
+            decimals=extracted.get("decimals"),
+            symbol=extracted.get("symbol"),
+            execution_id=execution_id,
+            workflow_id=workflow["id"],
+        )
+
+        if status == ExecutionStatus.SUCCESS:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.CHECK_TOKEN_BALANCE,
+                status=status,
+                output_type="check_token_balance",
+                output=output,
+            )
+
+        return WorkflowExecutionResult(
+            workflow=WorkflowName.CHECK_TOKEN_BALANCE,
+            status=status,
+            output_type="check_token_balance",
+            output=output,
+            error=WorkflowError(
+                code="WORKFLOW_EXECUTION_FAILED",
+                message="check_token_balance workflow failed",
+                retryable=False,
+            ),
+        )
+
     def _find_workflow_by_name(self, workflow_name: str) -> dict[str, Any] | None:
         workflows = self._keeperhub.list_workflows()
         return next((item for item in workflows if item.get("name") == workflow_name), None)
@@ -107,6 +173,31 @@ class ExecutionService:
                     if isinstance(value, str) and value.startswith("0x"):
                         return value
         return None
+
+    @staticmethod
+    def _extract_balance_payload(logs_payload: dict[str, Any]) -> dict[str, Any]:
+        entries = logs_payload.get("data", [])
+        for entry in entries:
+            output = entry.get("output") or {}
+            if not isinstance(output, dict):
+                continue
+
+            if "balance" in output:
+                value = output.get("balance")
+                if isinstance(value, str):
+                    return {"raw_balance": value}
+
+            if "value" in output:
+                value = output.get("value")
+                if isinstance(value, str):
+                    return {
+                        "raw_balance": value,
+                        "formatted_balance": output.get("formatted"),
+                        "decimals": output.get("decimals"),
+                        "symbol": output.get("symbol"),
+                    }
+
+        return {"raw_balance": "0"}
 
     @staticmethod
     def _build_explorer_url(chain_id: str, tx_hash: str | None) -> str | None:
