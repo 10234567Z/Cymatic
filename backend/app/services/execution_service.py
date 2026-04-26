@@ -2,6 +2,8 @@ from typing import Any
 
 from app.services.keeperhub_client import KeeperHubClient
 from app.services.workflow_contracts import (
+    CheckAaveHealthInput,
+    CheckAaveHealthOutput,
     CheckTokenBalanceInput,
     CheckTokenBalanceOutput,
     ExecutionStatus,
@@ -145,6 +147,68 @@ class ExecutionService:
             ),
         )
 
+    def check_aave_health(self, payload: CheckAaveHealthInput) -> WorkflowExecutionResult:
+        workflow = self._find_workflow_by_name(WorkflowName.CHECK_AAVE_HEALTH.value)
+        if not workflow:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.CHECK_AAVE_HEALTH,
+                status=ExecutionStatus.ERROR,
+                output_type="check_aave_health",
+                error=WorkflowError(
+                    code="WORKFLOW_NOT_FOUND",
+                    message="check_aave_health workflow is not deployed",
+                ),
+            )
+
+        execution = self._keeperhub.execute_workflow(workflow["id"])
+        execution_id = execution.get("executionId", "")
+        status_payload = self._keeperhub.get_execution_status(execution_id)
+        status = self._to_status(status_payload.get("status", "pending"))
+
+        if status in {ExecutionStatus.PENDING, ExecutionStatus.RUNNING}:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.CHECK_AAVE_HEALTH,
+                status=status,
+                output_type="check_aave_health",
+                output=CheckAaveHealthOutput(
+                    health_factor=None,
+                    supplied_value_usd=None,
+                    borrowed_value_usd=None,
+                    execution_id=execution_id,
+                    workflow_id=workflow["id"],
+                ),
+            )
+
+        logs = self._keeperhub.get_execution_logs(execution_id)
+        extracted = self._extract_aave_health_payload(logs)
+        output = CheckAaveHealthOutput(
+            health_factor=extracted.get("health_factor"),
+            supplied_value_usd=extracted.get("supplied_value_usd"),
+            borrowed_value_usd=extracted.get("borrowed_value_usd"),
+            execution_id=execution_id,
+            workflow_id=workflow["id"],
+        )
+
+        if status == ExecutionStatus.SUCCESS:
+            return WorkflowExecutionResult(
+                workflow=WorkflowName.CHECK_AAVE_HEALTH,
+                status=status,
+                output_type="check_aave_health",
+                output=output,
+            )
+
+        return WorkflowExecutionResult(
+            workflow=WorkflowName.CHECK_AAVE_HEALTH,
+            status=status,
+            output_type="check_aave_health",
+            output=output,
+            error=WorkflowError(
+                code="WORKFLOW_EXECUTION_FAILED",
+                message="check_aave_health workflow failed",
+                retryable=False,
+            ),
+        )
+
     def _find_workflow_by_name(self, workflow_name: str) -> dict[str, Any] | None:
         workflows = self._keeperhub.list_workflows()
         return next((item for item in workflows if item.get("name") == workflow_name), None)
@@ -198,6 +262,38 @@ class ExecutionService:
                     }
 
         return {"raw_balance": "0"}
+
+    @staticmethod
+    def _extract_aave_health_payload(logs_payload: dict[str, Any]) -> dict[str, Any]:
+        entries = logs_payload.get("data", [])
+        for entry in entries:
+            output = entry.get("output") or {}
+            if not isinstance(output, dict):
+                continue
+
+            if "healthFactor" in output or "health_factor" in output:
+                return {
+                    "health_factor": ExecutionService._to_float(
+                        output.get("healthFactor", output.get("health_factor"))
+                    ),
+                    "supplied_value_usd": ExecutionService._to_float(
+                        output.get("suppliedValueUsd", output.get("supplied_value_usd"))
+                    ),
+                    "borrowed_value_usd": ExecutionService._to_float(
+                        output.get("borrowedValueUsd", output.get("borrowed_value_usd"))
+                    ),
+                }
+
+        return {}
+
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _build_explorer_url(chain_id: str, tx_hash: str | None) -> str | None:
