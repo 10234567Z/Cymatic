@@ -118,6 +118,9 @@ class KeeperHubClient:
     def get_execution_logs(self, execution_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/workflows/executions/{execution_id}/logs")
 
+    def list_executions(self, workflow_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/workflows/{workflow_id}/executions")
+
     def get_wallet_integration(self) -> dict[str, Any]:
         return self._request("GET", "/api/integrations/wallet")
 

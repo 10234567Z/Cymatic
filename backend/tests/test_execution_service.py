@@ -17,6 +17,56 @@ class FakeKeeperHubClient:
         self._logs = logs or {"data": []}
         self.created_workflows = []
 
+        self._workflow_details = {}
+        for wf in workflows:
+            name = wf.get("name")
+            wf_id = wf.get("id")
+            details = {
+                "id": wf_id,
+                "name": name,
+                "description": "test workflow",
+                "nodes": [
+                    {
+                        "id": "trigger-1",
+                        "type": "trigger",
+                        "data": {"config": {"triggerType": "Manual"}},
+                    }
+                ],
+                "edges": [],
+            }
+
+            if name == "check_token_balance":
+                details["nodes"].append(
+                    {
+                        "id": "check-token-balance-1",
+                        "type": "action",
+                        "data": {"config": {"actionType": "web3/check-token-balance"}},
+                    }
+                )
+                details["edges"] = [{"id": "edge-1", "source": "trigger-1", "target": "check-token-balance-1"}]
+
+            if name == "check_aave_health":
+                details["nodes"].append(
+                    {
+                        "id": "aave-health-1",
+                        "type": "action",
+                        "data": {"config": {"actionType": "web3/read-contract"}},
+                    }
+                )
+                details["edges"] = [{"id": "edge-1", "source": "trigger-1", "target": "aave-health-1"}]
+
+            if name == "transfer_erc20":
+                details["nodes"].append(
+                    {
+                        "id": "transfer-token-1",
+                        "type": "action",
+                        "data": {"config": {"actionType": "web3/transfer-token"}},
+                    }
+                )
+                details["edges"] = [{"id": "edge-1", "source": "trigger-1", "target": "transfer-token-1"}]
+
+            self._workflow_details[wf_id] = details
+
     def list_workflows(self):
         return self._workflows
 
@@ -28,6 +78,24 @@ class FakeKeeperHubClient:
 
     def get_execution_logs(self, execution_id):
         return self._logs
+
+    def list_executions(self, workflow_id):
+        return [
+            {
+                "id": self._execution.get("executionId", "exec_1"),
+                "status": self._status.get("status", "success"),
+                "output": self._logs.get("output", {}),
+            }
+        ]
+
+    def get_workflow(self, workflow_id):
+        return self._workflow_details[workflow_id]
+
+    def update_workflow(self, workflow_id, **kwargs):
+        details = self._workflow_details[workflow_id]
+        for key, value in kwargs.items():
+            details[key] = value
+        return details
 
     def create_workflow(self, name, description="", project_id=None):
         created = {
