@@ -1,42 +1,51 @@
-# Platform Agents
+# Platform Agents (4-Agent Runtime)
 
-This module implements the call reasoning behavior for Cymatic.
+This service implements 4 distinct agents and wires them through AXL-style envelopes.
 
-## What It Does
+## Agents
 
-The reasoning agent follows this exact flow:
+1. Voice Agent
+- Accepts Twilio media stream events.
+- Converts inbound media to transcript (0G STT hook + deterministic fallback).
+- Sends transcript to Reasoning Agent.
+- Converts response text into Twilio-compatible base64 mulaw payloads.
 
-1. Parse caller sentence and infer intent.
-2. List workflows from KeeperHub (`GET /api/workflows`).
-3. Wildcard-match best workflow by intent keywords.
-4. Build execution input from extracted entities.
-5. Execute that workflow (`POST /api/workflow/{id}/execute`).
-6. Poll status and return final output.
+2. Reasoning Agent
+- Uses 0G LLM hook for intent/entity extraction.
+- Requests execution from Execution Agent.
+- Requests natural spoken phrasing from Response Agent.
 
-No workflow creation is done here. It only uses existing workflows.
+3. Execution Agent
+- Lists existing KeeperHub workflows.
+- Matches with wildcard + action type hints.
+- Executes selected workflow and returns normalized result.
 
-## Supported Intents
+4. Response Agent
+- Builds short, voice-safe response text from execution output.
 
-- `check_token_balance`
-- `transfer_erc20`
-- `check_aave_health`
-- `monitor_aave_health`
+## API Endpoints
+
+- `GET /healthz`
+- `POST /agents/voice/process-text`
+- `POST /agents/voice/process-twilio-event`
+- `POST /agents/reasoning/route`
+- `POST /agents/execution/execute`
+- `GET /agents/workflows`
 
 ## Run
 
 ```bash
 cd platform_agents
-python main.py "check usdc balance on base for 0x646D1FEd1dB30e6d8dEd0e0097a27c5d38c4c32F"
+python -m pip install -e .
+uvicorn main:app --reload --port 8100
 ```
 
-## Required Environment
+## Required Env
 
 - `KEEPERHUB_API_KEY`
-- Optional: `KEEPERHUB_BASE_URL` (defaults to `https://app.keeperhub.com`)
-- Optional: `KEEPERHUB_WALLET_ID` (used for transfer intent)
+- Optional: `KEEPERHUB_BASE_URL` (default `https://app.keeperhub.com`)
+- Optional: `ZERO_G_INFERENCE_BASE_URL`
+- Optional: `ZERO_G_INFERENCE_API_KEY`
+- Optional: `ZERO_G_LLM_MODEL`, `ZERO_G_STT_MODEL`, `ZERO_G_TTS_MODEL`
 
-The script auto-loads `.env` from:
-
-- `platform_agents/.env`
-- `backend/.env`
-- repo root `.env`
+Note: If 0G inference endpoints are not set, deterministic fallbacks keep end-to-end integration testable.
