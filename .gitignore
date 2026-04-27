@@ -1,0 +1,8 @@
+# Root env and local planning files
+.env
+*.local
+plan.md
+
+# Python cache
+__pycache__/
+*.pyc
