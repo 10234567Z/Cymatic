@@ -1,3 +1,1 @@
-from app.routes.execution import router as execution_router
-
-__all__ = ["execution_router"]
+# Routes module - MCP router imported in main.py

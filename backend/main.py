@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 
-from app.routes import execution_router
+from app.routes.mcp import router as mcp_router
 
 app = FastAPI(title="Cymatic Backend", version="0.1.0")
-app.include_router(execution_router)
+app.include_router(mcp_router)
 
 
 @app.get("/healthz")
