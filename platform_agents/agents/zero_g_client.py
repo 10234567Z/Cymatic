@@ -14,9 +14,57 @@ class ZeroGInferenceClient:
         self.llm_model = os.getenv("ZERO_G_LLM_MODEL", "")
         self.stt_model = os.getenv("ZERO_G_STT_MODEL", "")
         self.tts_model = os.getenv("ZERO_G_TTS_MODEL", "")
+        # Optional direct integration path via official 0G compute broker-style API.
+        self.broker_base_url = os.getenv("ZERO_G_BROKER_BASE_URL", "").rstrip("/")
+        self.provider_llm = os.getenv("ZERO_G_PROVIDER_ADDRESS_LLM", "")
+        self.provider_stt = os.getenv("ZERO_G_PROVIDER_ADDRESS_STT", "")
         self.client = httpx.Client(timeout=30.0)
 
+    def _query_broker(self, provider_address: str, query: str) -> str | None:
+        if not self.broker_base_url or not provider_address:
+            return None
+
+        try:
+            response = self.client.post(
+                f"{self.broker_base_url}/api/services/query",
+                json={
+                    "providerAddress": provider_address,
+                    "query": query,
+                    "fallbackFee": 0.000001,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            result = payload.get("response") if isinstance(payload, dict) else None
+            if isinstance(result, dict):
+                content = result.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+            return None
+        except Exception:
+            return None
+
     def infer_intent(self, text: str) -> dict[str, Any]:
+        broker_reply = self._query_broker(
+            self.provider_llm,
+            (
+                "Extract intent and entities as compact JSON with keys intent, entities, confidence. "
+                "Supported intents: check_token_balance, transfer_erc20, check_aave_health, monitor_aave_health. "
+                f"User text: {text}"
+            ),
+        )
+        if broker_reply:
+            try:
+                import json
+
+                parsed = json.loads(broker_reply)
+                if isinstance(parsed, dict) and isinstance(parsed.get("intent"), str):
+                    parsed.setdefault("entities", {})
+                    parsed.setdefault("confidence", 0.75)
+                    return parsed
+            except Exception:
+                pass
+
         normalized = text.lower()
         intent = "check_token_balance"
         if any(x in normalized for x in ["send", "transfer", "pay"]):
@@ -46,6 +94,17 @@ class ZeroGInferenceClient:
     def transcribe_mulaw_base64(self, b64_audio: str) -> str:
         if not b64_audio:
             return ""
+        broker_reply = self._query_broker(
+            self.provider_stt,
+            (
+                "Transcribe this base64-encoded mulaw 8kHz audio payload. "
+                "Return only the transcription text. "
+                f"payload={b64_audio[:16000]}"
+            ),
+        )
+        if isinstance(broker_reply, str) and broker_reply.strip():
+            return broker_reply.strip()
+
         # If a real 0G STT endpoint is configured, this is where the API call should go.
         # We keep a deterministic fallback so backend integration can proceed now.
         raw = base64.b64decode(b64_audio)

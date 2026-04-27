@@ -54,6 +54,10 @@ uvicorn main:app --reload --port 8100
 - Optional: `ZERO_G_INFERENCE_BASE_URL`
 - Optional: `ZERO_G_INFERENCE_API_KEY`
 - Optional: `ZERO_G_LLM_MODEL`, `ZERO_G_STT_MODEL`, `ZERO_G_TTS_MODEL`
+- Optional direct official 0G compute broker integration:
+	- `ZERO_G_BROKER_BASE_URL` (example: `http://127.0.0.1:4000`)
+	- `ZERO_G_PROVIDER_ADDRESS_LLM`
+	- `ZERO_G_PROVIDER_ADDRESS_STT`
 
 Note: If 0G inference endpoints are not set, deterministic fallbacks keep end-to-end integration testable.
 
@@ -68,3 +72,11 @@ This matches the Gensyn AXL examples (`tools/list` / `tools/call` JSON-RPC over 
 You can inspect current mode/topology via:
 
 - `GET /agents/axl/status`
+
+## Official Library Notes
+
+- 0G Compute official SDK path is TypeScript (`@0glabs/0g-serving-broker`).
+- 0G Storage official SDK path is TypeScript (`@0gfoundation/0g-ts-sdk`) and Go (`0g-storage-client`).
+- Gensyn AXL official integration is the node binary + local HTTP API bridge (`/topology`, `/send`, `/recv`, `/mcp/...`, `/a2a/...`).
+
+This project now uses the official AXL HTTP pattern directly, and can use official 0G compute stack through a broker-backed endpoint when env vars are set.
