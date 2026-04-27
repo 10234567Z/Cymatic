@@ -89,19 +89,12 @@ class AXLMeshTransport:
     def _send_over_axl_mcp(self, message: AXLMessage) -> dict[str, Any]:
         peer_id, service_name = self._remote_map.get(message.to_agent, ("", message.to_agent))
         if not peer_id:
-            # If no remote peer configured for this target, fall back to local handler.
-            handler = self._handlers.get(message.to_agent)
-            if not handler:
-                return {
-                    "ok": False,
-                    "error": f"AXL peer not configured for '{message.to_agent}'",
-                    "trace_id": message.trace_id,
-                }
-            result = handler(message)
-            result.setdefault("ok", True)
-            result.setdefault("trace_id", message.trace_id)
-            result.setdefault("transport", "local-fallback")
-            return result
+            return {
+                "ok": False,
+                "error": f"AXL peer not configured for '{message.to_agent}'",
+                "trace_id": message.trace_id,
+                "transport": "axl-mcp",
+            }
 
         request_payload = {
             "jsonrpc": "2.0",

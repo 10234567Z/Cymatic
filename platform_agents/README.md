@@ -6,9 +6,9 @@ This service implements 4 distinct agents and wires them through AXL-style envel
 
 1. Voice Agent
 - Accepts Twilio media stream events.
-- Converts inbound media to transcript (0G STT hook + deterministic fallback).
+- Converts inbound media to transcript via 0G STT.
 - Sends transcript to Reasoning Agent.
-- Converts response text into Twilio-compatible base64 mulaw payloads.
+- Converts response text into Twilio-compatible base64 mulaw payloads via 0G TTS.
 
 2. Reasoning Agent
 - Uses 0G LLM hook for intent/entity extraction.
@@ -55,11 +55,12 @@ uvicorn main:app --reload --port 8100
 - Optional: `ZERO_G_INFERENCE_API_KEY`
 - Optional: `ZERO_G_LLM_MODEL`, `ZERO_G_STT_MODEL`, `ZERO_G_TTS_MODEL`
 - Optional direct official 0G compute broker integration:
-	- `ZERO_G_BROKER_BASE_URL` (example: `http://127.0.0.1:4000`)
-	- `ZERO_G_PROVIDER_ADDRESS_LLM`
-	- `ZERO_G_PROVIDER_ADDRESS_STT`
+	- `ZERO_G_BROKER_BASE_URL` (required, example: `http://127.0.0.1:4000`)
+	- `ZERO_G_PROVIDER_ADDRESS_LLM` (required)
+	- `ZERO_G_PROVIDER_ADDRESS_STT` (required)
+	- `ZERO_G_PROVIDER_ADDRESS_TTS` (required)
 
-Note: If 0G inference endpoints are not set, deterministic fallbacks keep end-to-end integration testable.
+No fallback mode: missing or invalid 0G/AXL config will fail fast with explicit errors.
 
 ## AXL-Doc-Aligned Usage
 
