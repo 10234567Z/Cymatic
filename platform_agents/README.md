@@ -44,8 +44,27 @@ uvicorn main:app --reload --port 8100
 
 - `KEEPERHUB_API_KEY`
 - Optional: `KEEPERHUB_BASE_URL` (default `https://app.keeperhub.com`)
+- Optional: `AXL_TRANSPORT_MODE` (`local` or `mcp`, default `local`)
+- Optional: `AXL_NODE_URL` (default `http://127.0.0.1:9002`)
+- Optional peer wiring for remote MCP over AXL:
+	- `AXL_PEER_REASONING`, `AXL_SERVICE_REASONING`
+	- `AXL_PEER_EXECUTION`, `AXL_SERVICE_EXECUTION`
+	- `AXL_PEER_RESPONSE`, `AXL_SERVICE_RESPONSE`
+	- `AXL_PEER_VOICE`, `AXL_SERVICE_VOICE`
 - Optional: `ZERO_G_INFERENCE_BASE_URL`
 - Optional: `ZERO_G_INFERENCE_API_KEY`
 - Optional: `ZERO_G_LLM_MODEL`, `ZERO_G_STT_MODEL`, `ZERO_G_TTS_MODEL`
 
 Note: If 0G inference endpoints are not set, deterministic fallbacks keep end-to-end integration testable.
+
+## AXL-Doc-Aligned Usage
+
+When `AXL_TRANSPORT_MODE=mcp`, inter-agent calls use the documented AXL MCP bridge path:
+
+- `POST http://127.0.0.1:9002/mcp/{peer_id}/{service_name}`
+
+This matches the Gensyn AXL examples (`tools/list` / `tools/call` JSON-RPC over MCP).
+
+You can inspect current mode/topology via:
+
+- `GET /agents/axl/status`

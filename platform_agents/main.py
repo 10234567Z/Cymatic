@@ -125,6 +125,11 @@ def list_workflows() -> dict[str, Any]:
         return {"ok": False, "error": str(exc), "workflows": []}
 
 
+@app.get("/agents/axl/status")
+def axl_status() -> dict[str, Any]:
+    return {"ok": True, "axl": transport.status()}
+
+
 if __name__ == "__main__":
     import uvicorn
 
