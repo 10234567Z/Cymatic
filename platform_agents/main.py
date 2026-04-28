@@ -1,48 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from agents.contracts import AXLMessage
-from agents.execution_agent import ExecutionAgent
-from agents.keeperhub_client import KeeperHubWorkflowClient
-from agents.reasoning_agent import ReasoningAgent
-from agents.response_agent import ResponseAgent
-from agents.transport import AXLMeshTransport
-from agents.voice_agent import VoiceAgent
-from agents.inference_client import InferenceClient
-
-
-def load_env() -> None:
-    candidates = [
-        Path.cwd() / ".env",
-        Path.cwd() / "backend" / ".env",
-        Path(__file__).resolve().parents[1] / "backend" / ".env",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            load_dotenv(candidate, override=False)
-
-
-load_env()
+try:
+    from agent_runtime import build_runtime
+except ImportError:  # pragma: no cover
+    from platform_agents.agent_runtime import build_runtime
 
 app = FastAPI(title="Cymatic Platform Agents", version="0.2.0")
-transport = AXLMeshTransport()
-zg_client = InferenceClient()
-keeperhub_client = KeeperHubWorkflowClient()
-
-execution_agent = ExecutionAgent(keeperhub_client)
-response_agent = ResponseAgent(zg_client)
-reasoning_agent = ReasoningAgent(transport, zg_client)
-voice_agent = VoiceAgent(transport, zg_client)
-
-transport.register("execution", execution_agent.handle)
-transport.register("response", response_agent.handle)
-transport.register("reasoning", reasoning_agent.handle)
+runtime = build_runtime(force_local_transport=False)
+transport = runtime.transport
+voice_agent = runtime.voice
+reasoning_agent = runtime.reasoning
+execution_agent = runtime.execution
 
 
 class ProcessTextRequest(BaseModel):
