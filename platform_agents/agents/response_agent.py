@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import AXLMessage
-from .zero_g_client import ZeroGInferenceClient
+from .inference_client import InferenceClient
 
 
 class ResponseAgent:
-    def __init__(self, zg: ZeroGInferenceClient):
+    def __init__(self, zg: InferenceClient):
         self.zg = zg
 
     def handle(self, message: AXLMessage) -> dict[str, Any]:

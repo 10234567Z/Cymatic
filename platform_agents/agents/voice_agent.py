@@ -6,11 +6,11 @@ from typing import Any
 
 from .contracts import AXLMessage
 from .transport import AXLMeshTransport
-from .zero_g_client import ZeroGInferenceClient
+from .inference_client import InferenceClient
 
 
 class VoiceAgent:
-    def __init__(self, transport: AXLMeshTransport, zg: ZeroGInferenceClient):
+    def __init__(self, transport: AXLMeshTransport, zg: InferenceClient):
         self.transport = transport
         self.zg = zg
         self._sessions: dict[str, dict[str, Any]] = {}

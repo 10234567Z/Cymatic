@@ -6,7 +6,7 @@ from typing import Any
 
 from .contracts import AXLMessage
 from .transport import AXLMeshTransport
-from .zero_g_client import ZeroGInferenceClient
+from .inference_client import InferenceClient
 
 
 TOKEN_BY_SYMBOL_AND_CHAIN = {
@@ -26,7 +26,7 @@ TOKEN_BY_SYMBOL_AND_CHAIN = {
 
 
 class ReasoningAgent:
-    def __init__(self, transport: AXLMeshTransport, zg: ZeroGInferenceClient):
+    def __init__(self, transport: AXLMeshTransport, zg: InferenceClient):
         self.transport = transport
         self.zg = zg
 

@@ -14,7 +14,7 @@ from agents.reasoning_agent import ReasoningAgent
 from agents.response_agent import ResponseAgent
 from agents.transport import AXLMeshTransport
 from agents.voice_agent import VoiceAgent
-from agents.zero_g_client import ZeroGInferenceClient
+from agents.inference_client import InferenceClient
 
 
 def load_env() -> None:
@@ -32,7 +32,7 @@ load_env()
 
 app = FastAPI(title="Cymatic Platform Agents", version="0.2.0")
 transport = AXLMeshTransport()
-zg_client = ZeroGInferenceClient()
+zg_client = InferenceClient()
 keeperhub_client = KeeperHubWorkflowClient()
 
 execution_agent = ExecutionAgent(keeperhub_client)
