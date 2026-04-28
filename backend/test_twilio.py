@@ -27,8 +27,7 @@ async def inbound_call(request: Request):
 
     print(f"\n📞 Incoming call from {caller} | CallSid: {call_sid}")
 
-    # BASE_URL must be your ngrok wss:// URL
-    # e.g. if ngrok gives https://abc123.ngrok.io → use wss://abc123.ngrok.io
+   
     base_url = request.base_url
     ws_url = str(base_url).replace("http", "ws") + "test/stream"
 
