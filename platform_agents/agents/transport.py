@@ -13,30 +13,36 @@ class AXLMeshTransport:
     """AXL transport with two modes:
 
     - local: in-process handler dispatch (dev and single-process runtime)
-    - mcp: remote dispatch over AXL node HTTP bridge (/mcp/{peer}/{service})
+        - mcp/axl: remote dispatch over AXL node HTTP bridge
+            (/mcp/{peer}/{service} or /a2a/{peer}/{service})
     """
 
     def __init__(self) -> None:
         self.mode = os.getenv("AXL_TRANSPORT_MODE", "local").strip().lower()
         self.axl_node_url = os.getenv("AXL_NODE_URL", "http://127.0.0.1:9002").rstrip("/")
+        self.default_protocol = os.getenv("AXL_PROTOCOL_DEFAULT", "mcp").strip().lower()
         self._http = httpx.Client(timeout=30.0)
         self._handlers: dict[str, Callable[[AXLMessage], dict[str, Any]]] = {}
-        self._remote_map: dict[str, tuple[str, str]] = {
+        self._remote_map: dict[str, tuple[str, str, str]] = {
             "voice": (
                 os.getenv("AXL_PEER_VOICE", ""),
                 os.getenv("AXL_SERVICE_VOICE", "voice"),
+                os.getenv("AXL_PROTOCOL_VOICE", self.default_protocol).strip().lower(),
             ),
             "reasoning": (
                 os.getenv("AXL_PEER_REASONING", ""),
                 os.getenv("AXL_SERVICE_REASONING", "reasoning"),
+                os.getenv("AXL_PROTOCOL_REASONING", self.default_protocol).strip().lower(),
             ),
             "execution": (
                 os.getenv("AXL_PEER_EXECUTION", ""),
                 os.getenv("AXL_SERVICE_EXECUTION", "execution"),
+                os.getenv("AXL_PROTOCOL_EXECUTION", self.default_protocol).strip().lower(),
             ),
             "response": (
                 os.getenv("AXL_PEER_RESPONSE", ""),
                 os.getenv("AXL_SERVICE_RESPONSE", "response"),
+                os.getenv("AXL_PROTOCOL_RESPONSE", self.default_protocol).strip().lower(),
             ),
         }
 
@@ -47,8 +53,12 @@ class AXLMeshTransport:
         info: dict[str, Any] = {
             "mode": self.mode,
             "axlNodeUrl": self.axl_node_url,
+            "defaultProtocol": self.default_protocol,
+            "remotes": {
+                k: {"peer": v[0], "service": v[1], "protocol": v[2]} for k, v in self._remote_map.items()
+            },
         }
-        if self.mode == "mcp":
+        if self.mode in {"mcp", "axl"}:
             try:
                 resp = self._http.get(f"{self.axl_node_url}/topology")
                 if resp.status_code == 200:
@@ -64,8 +74,8 @@ class AXLMeshTransport:
         return info
 
     def send(self, message: AXLMessage) -> dict[str, Any]:
-        if self.mode == "mcp":
-            return self._send_over_axl_mcp(message)
+        if self.mode in {"mcp", "axl"}:
+            return self._send_over_axl(message)
 
         handler = self._handlers.get(message.to_agent)
         if not handler:
@@ -86,8 +96,23 @@ class AXLMeshTransport:
                 "trace_id": message.trace_id,
             }
 
-    def _send_over_axl_mcp(self, message: AXLMessage) -> dict[str, Any]:
-        peer_id, service_name = self._remote_map.get(message.to_agent, ("", message.to_agent))
+    def _send_over_axl(self, message: AXLMessage) -> dict[str, Any]:
+        peer_id, service_name, protocol = self._remote_map.get(
+            message.to_agent,
+            ("", message.to_agent, self.default_protocol),
+        )
+        if protocol not in {"mcp", "a2a"}:
+            return {
+                "ok": False,
+                "error": f"Unsupported AXL protocol '{protocol}' for '{message.to_agent}'",
+                "trace_id": message.trace_id,
+                "transport": "axl",
+            }
+        if protocol == "a2a":
+            return self._send_over_axl_a2a(message, peer_id, service_name)
+        return self._send_over_axl_mcp(message, peer_id, service_name)
+
+    def _send_over_axl_mcp(self, message: AXLMessage, peer_id: str, service_name: str) -> dict[str, Any]:
         if not peer_id:
             return {
                 "ok": False,
@@ -149,4 +174,52 @@ class AXLMeshTransport:
                 "error": f"AXL MCP send failed: {exc}",
                 "trace_id": message.trace_id,
                 "transport": "axl-mcp",
+            }
+
+    def _send_over_axl_a2a(self, message: AXLMessage, peer_id: str, service_name: str) -> dict[str, Any]:
+        if not peer_id:
+            return {
+                "ok": False,
+                "error": f"AXL peer not configured for '{message.to_agent}'",
+                "trace_id": message.trace_id,
+                "transport": "axl-a2a",
+            }
+
+        request_payload = {
+            "trace_id": message.trace_id,
+            "from_agent": message.from_agent,
+            "to_agent": message.to_agent,
+            "intent": message.intent,
+            "payload": message.payload,
+        }
+
+        try:
+            resp = self._http.post(
+                f"{self.axl_node_url}/a2a/{peer_id}/{service_name}",
+                headers={"Content-Type": "application/json"},
+                json=request_payload,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+
+            if isinstance(payload, dict):
+                result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+                merged = dict(result)
+                merged.setdefault("trace_id", message.trace_id)
+                merged.setdefault("ok", True)
+                merged.setdefault("transport", "axl-a2a")
+                return merged
+
+            return {
+                "ok": True,
+                "trace_id": message.trace_id,
+                "transport": "axl-a2a",
+                "raw": payload,
+            }
+        except Exception as exc:  # pragma: no cover
+            return {
+                "ok": False,
+                "error": f"AXL A2A send failed: {exc}",
+                "trace_id": message.trace_id,
+                "transport": "axl-a2a",
             }
