@@ -54,6 +54,14 @@ cd platform_agents
 uvicorn a2a_server:app --host 127.0.0.1 --port 7102
 ```
 
+### Run All Local Services (One Command)
+
+```bash
+cd platform_agents
+chmod +x scripts/run_protocol_stack.sh
+./scripts/run_protocol_stack.sh
+```
+
 These adapters expose your local agent runtime as protocol endpoints that an AXL
 node can forward to.
 
@@ -138,6 +146,9 @@ curl -s -X POST http://127.0.0.1:7101/mcp \
 curl -s -X POST http://127.0.0.1:7102/a2a \
 	-H "Content-Type: application/json" \
 	-d '{"trace_id":"demo-1","from_agent":"remote","intent":"phrase_response","to_agent":"response","payload":{"intent":"check_aave_health","execution":{"output":{"healthFactor":"1.75"}}}}' | python3 -m json.tool
+
+# Local adapter smoke suite
+./.venv/bin/python platform_agents/scripts/smoke_protocols.py
 ```
 
 ## Official Library Notes
