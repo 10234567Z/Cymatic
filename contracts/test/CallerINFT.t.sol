@@ -84,7 +84,7 @@ contract CallerINFTTest is Test {
         descriptions[0] = "d1";
         descriptions[1] = "d2";
 
-        vm.expectRevert("Length mismatch");
+        vm.expectRevert(CallerINFT.LengthMismatch.selector);
         inft.mint(proofs, descriptions, alice);
     }
 
@@ -118,7 +118,7 @@ contract CallerINFTTest is Test {
         uint256 tokenId = inft.mint(proofs, descriptions, alice);
 
         vm.prank(bob);
-        vm.expectRevert("Not owner");
+        vm.expectRevert(CallerINFT.NotOwner.selector);
         inft.update(tokenId, proofs);
     }
 
@@ -152,7 +152,7 @@ contract CallerINFTTest is Test {
         transferProofs[0] = abi.encodePacked("transfer-proof");
 
         vm.prank(bob);
-        vm.expectRevert("Not owner");
+        vm.expectRevert(CallerINFT.NotOwner.selector);
         inft.transfer(bob, tokenId, transferProofs);
     }
 
@@ -210,7 +210,7 @@ contract CallerINFTTest is Test {
         transferProofs[0] = abi.encodePacked("transfer-proof");
 
         vm.prank(bob);
-        vm.expectRevert("Not approved");
+        vm.expectRevert(CallerINFT.NotApproved.selector);
         inft.transferFrom(alice, charlie, tokenId, transferProofs);
     }
 
@@ -279,7 +279,7 @@ contract CallerINFTTest is Test {
         uint256 tokenId = inft.mint(proofs, descriptions, alice);
 
         vm.prank(bob);
-        vm.expectRevert("Not owner");
+        vm.expectRevert(CallerINFT.NotOwner.selector);
         inft.authorizeUsage(tokenId, charlie);
     }
 
@@ -346,12 +346,12 @@ contract CallerINFTTest is Test {
     // ── edge cases ────────────────────────────────────────────────────────────
 
     function test_OwnerOf_Reverts_TokenNotExist() public {
-        vm.expectRevert("Token not exist");
+        vm.expectRevert(CallerINFT.TokenNotExist.selector);
         inft.ownerOf(999);
     }
 
     function test_DataHashesOf_Reverts_TokenNotExist() public {
-        vm.expectRevert("Token not exist");
+        vm.expectRevert(CallerINFT.TokenNotExist.selector);
         inft.dataHashesOf(999);
     }
 

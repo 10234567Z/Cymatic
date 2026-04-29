@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
-import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./interfaces/IERC7857.sol";
 import "./interfaces/IERC7857Metadata.sol";
 import "./interfaces/IERC7857DataVerifier.sol";
@@ -11,8 +10,16 @@ import "./interfaces/IERC7857DataVerifier.sol";
 /// @notice ERC-7857 compliant agent NFT for Cymatic caller identity.
 ///         Each phone caller gets exactly one token with encrypted metadata
 ///         backed by cryptographic proofs and 0G Storage.
-contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
-    using Strings for uint256;
+contract CallerINFT is AccessControl, IERC7857, IERC7857Metadata {
+    error ZeroVerifierAddress();
+    error ZeroAddress();
+    error LengthMismatch();
+    error InvalidPreimageProof();
+    error InvalidTransferValidityProof();
+    error ReceiverMismatch();
+    error NotOwner();
+    error NotApproved();
+    error TokenNotExist();
 
     struct TokenData {
         address owner;
@@ -43,7 +50,7 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         string memory chainURL_,
         string memory indexerURL_
     ) {
-        require(verifierAddr != address(0), "Zero verifier address");
+        if (verifierAddr == address(0)) revert ZeroVerifierAddress();
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
 
@@ -67,7 +74,7 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
     // ─ Admin functions ─
 
     function updateVerifier(address newVerifier) public virtual onlyRole(ADMIN_ROLE) {
-        require(newVerifier != address(0), "Zero address");
+        if (newVerifier == address(0)) revert ZeroAddress();
         verifier = IERC7857DataVerifier(newVerifier);
     }
 
@@ -88,7 +95,7 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         virtual
         returns (uint256 tokenId)
     {
-        require(dataDescriptions.length == proofs.length, "Length mismatch");
+        if (dataDescriptions.length != proofs.length) revert LengthMismatch();
         if (to == address(0)) {
             to = msg.sender;
         }
@@ -97,7 +104,7 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         bytes32[] memory dataHashes = new bytes32[](proofOutputs.length);
 
         for (uint256 i = 0; i < proofOutputs.length; i++) {
-            require(proofOutputs[i].isValid, "Invalid preimage proof");
+            if (!proofOutputs[i].isValid) revert InvalidPreimageProof();
             dataHashes[i] = proofOutputs[i].dataHash;
         }
 
@@ -115,13 +122,13 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
 
     function update(uint256 tokenId, bytes[] calldata proofs) public virtual {
         TokenData storage token = _tokens[tokenId];
-        require(token.owner == msg.sender, "Not owner");
+        if (token.owner != msg.sender) revert NotOwner();
 
         PreimageProofOutput[] memory proofOutputs = verifier.verifyPreimage(proofs);
         bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
 
         for (uint256 i = 0; i < proofOutputs.length; i++) {
-            require(proofOutputs[i].isValid, "Invalid preimage proof");
+            if (!proofOutputs[i].isValid) revert InvalidPreimageProof();
             newDataHashes[i] = proofOutputs[i].dataHash;
         }
 
@@ -132,16 +139,16 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
     }
 
     function transfer(address to, uint256 tokenId, bytes[] calldata proofs) public virtual {
-        require(to != address(0), "Zero address");
-        require(_tokens[tokenId].owner == msg.sender, "Not owner");
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
 
         TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
         bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
         bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
 
         for (uint256 i = 0; i < proofOutputs.length; i++) {
-            require(proofOutputs[i].isValid, "Invalid transfer validity proof");
-            require(proofOutputs[i].receiver == to, "Receiver mismatch");
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
             sealedKeys[i] = proofOutputs[i].sealedKey;
             newDataHashes[i] = proofOutputs[i].newDataHash;
         }
@@ -157,21 +164,20 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         public
         virtual
     {
-        require(to != address(0), "Zero address");
-        require(_tokens[tokenId].owner == from, "Not owner");
-        require(
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != from) revert NotOwner();
+        if (!(
             _tokens[tokenId].approvedUser == msg.sender || _tokens[tokenId].owner == msg.sender
-                || _operatorApprovals[from][msg.sender],
-            "Not approved"
-        );
+                || _operatorApprovals[from][msg.sender]
+        )) revert NotApproved();
 
         TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
         bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
         bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
 
         for (uint256 i = 0; i < proofOutputs.length; i++) {
-            require(proofOutputs[i].isValid, "Invalid transfer validity proof");
-            require(proofOutputs[i].receiver == to, "Receiver mismatch");
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
             sealedKeys[i] = proofOutputs[i].sealedKey;
             newDataHashes[i] = proofOutputs[i].newDataHash;
         }
@@ -188,16 +194,16 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         virtual
         returns (uint256)
     {
-        require(to != address(0), "Zero address");
-        require(_tokens[tokenId].owner == msg.sender, "Not owner");
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
 
         TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
         bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
         bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
 
         for (uint256 i = 0; i < proofOutputs.length; i++) {
-            require(proofOutputs[i].isValid, "Invalid transfer validity proof");
-            require(proofOutputs[i].receiver == to, "Receiver mismatch");
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
             sealedKeys[i] = proofOutputs[i].sealedKey;
             newDataHashes[i] = proofOutputs[i].newDataHash;
         }
@@ -221,21 +227,20 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         virtual
         returns (uint256)
     {
-        require(to != address(0), "Zero address");
-        require(_tokens[tokenId].owner == from, "Not owner");
-        require(
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != from) revert NotOwner();
+        if (!(
             _tokens[tokenId].approvedUser == msg.sender || _tokens[tokenId].owner == msg.sender
-                || _operatorApprovals[from][msg.sender],
-            "Not approved"
-        );
+                || _operatorApprovals[from][msg.sender]
+        )) revert NotApproved();
 
         TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
         bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
         bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
 
         for (uint256 i = 0; i < proofOutputs.length; i++) {
-            require(proofOutputs[i].isValid, "Invalid transfer validity proof");
-            require(proofOutputs[i].receiver == to, "Receiver mismatch");
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
             sealedKeys[i] = proofOutputs[i].sealedKey;
             newDataHashes[i] = proofOutputs[i].newDataHash;
         }
@@ -255,7 +260,7 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
     }
 
     function authorizeUsage(uint256 tokenId, address user) public virtual {
-        require(_tokens[tokenId].owner == msg.sender, "Not owner");
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
         _tokens[tokenId].authorizedUsers.push(user);
         emit Authorization(msg.sender, user, tokenId);
     }
@@ -263,7 +268,7 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
     // ─ Approval functions ─
 
     function approve(address to, uint256 tokenId) public virtual {
-        require(_tokens[tokenId].owner == msg.sender, "Not owner");
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
         _tokens[tokenId].approvedUser = to;
         emit Approval(msg.sender, to, tokenId);
     }
@@ -290,19 +295,19 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
 
     function ownerOf(uint256 tokenId) public view virtual returns (address) {
         TokenData storage token = _tokens[tokenId];
-        require(token.owner != address(0), "Token not exist");
+        if (token.owner == address(0)) revert TokenNotExist();
         return token.owner;
     }
 
     function authorizedUsersOf(uint256 tokenId) public view virtual returns (address[] memory) {
         TokenData storage token = _tokens[tokenId];
-        require(token.owner != address(0), "Token not exist");
+        if (token.owner == address(0)) revert TokenNotExist();
         return token.authorizedUsers;
     }
 
     function dataHashesOf(uint256 tokenId) public view virtual returns (bytes32[] memory) {
         TokenData storage token = _tokens[tokenId];
-        require(token.owner != address(0), "Token not exist");
+        if (token.owner == address(0)) revert TokenNotExist();
         return token.dataHashes;
     }
 
@@ -313,12 +318,12 @@ contract CallerINFT is AccessControlEnumerable, IERC7857, IERC7857Metadata {
         returns (string[] memory)
     {
         TokenData storage token = _tokens[tokenId];
-        require(token.owner != address(0), "Token not exist");
+        if (token.owner == address(0)) revert TokenNotExist();
         return token.dataDescriptions;
     }
 
     function tokenURI(uint256 tokenId) public view virtual returns (string memory) {
-        require(_exists(tokenId), "Token not exist");
+        if (!_exists(tokenId)) revert TokenNotExist();
         return string(
             abi.encodePacked('{"chainURL":"', chainURL, '","indexerURL":"', indexerURL, '"}')
         );
