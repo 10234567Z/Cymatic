@@ -1,3 +1,5 @@
+import asyncio
+
 from supabase import create_client, Client
 from app.config import settings
 from app.models.user import UserRecord, NewUserInput
@@ -6,8 +8,8 @@ _client: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SECRET_
 
 
 async def get_user_by_phone(phone_number: str) -> UserRecord | None:
-    response = (
-        _client.table("users")
+    response = await asyncio.to_thread(
+        lambda: _client.table("users")
         .select("*")
         .eq("phone_number", phone_number)
         .single()
@@ -19,8 +21,8 @@ async def get_user_by_phone(phone_number: str) -> UserRecord | None:
 
 
 async def create_user(payload: NewUserInput) -> UserRecord:
-    response = (
-        _client.table("users")
+    response = await asyncio.to_thread(
+        lambda: _client.table("users")
         .insert(payload.model_dump())
         .execute()
     )
@@ -28,7 +30,9 @@ async def create_user(payload: NewUserInput) -> UserRecord:
 
 
 async def update_inft(user_id: str, token_id: str, contract: str) -> None:
-    _client.table("users").update({
-        "inft_token_id": token_id,
-        "inft_contract": contract,
-    }).eq("id", user_id).execute()
+    await asyncio.to_thread(
+        lambda: _client.table("users").update({
+            "inft_token_id": token_id,
+            "inft_contract": contract,
+        }).eq("id", user_id).execute()
+    )
