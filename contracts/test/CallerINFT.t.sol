@@ -1,212 +1,368 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {CallerINFT} from "../src/CallerINFT.sol";
-import {MockOracle} from "../src/MockOracle.sol";
+import {MockVerifier} from "../src/MockVerifier.sol";
 
 contract CallerINFTTest is Test {
     CallerINFT public inft;
-    MockOracle public oracle;
+    MockVerifier public verifier;
 
-    address owner = address(this);
+    address admin = address(this);
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
-    address agent = makeAddr("agent");
-
-    string constant CALLER_ID = "+14155552671";
-    string constant CALLER_ID_2 = "+14155559999";
-    string constant ENCRYPTED_URI = "0g://testnet/encrypted-profile-abc123";
-    bytes32 constant METADATA_HASH = keccak256("initial-profile-data");
+    address charlie = makeAddr("charlie");
 
     function setUp() public {
-        oracle = new MockOracle();
-        inft = new CallerINFT(address(oracle));
+        verifier = new MockVerifier();
+        inft = new CallerINFT("Cymatic Caller Identity", "CAID", address(verifier), "https://0g.ai", "https://indexer.0g.ai");
     }
 
-    // ── registerCaller ───────────────────────────────────────────────────────
+    // ── mint ──────────────────────────────────────────────────────────────────
 
-    function test_RegisterCaller_MintsToken() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
+    function test_Mint_CreatesToken() public {
+        bytes[] memory proofs = new bytes[](2);
+        proofs[0] = abi.encodePacked("proof1");
+        proofs[1] = abi.encodePacked("proof2");
+
+        string[] memory descriptions = new string[](2);
+        descriptions[0] = "profile";
+        descriptions[1] = "history";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
         assertEq(tokenId, 1);
-        assertEq(inft.ownerOf(1), alice);
+        assertEq(inft.ownerOf(tokenId), alice);
     }
 
-    function test_RegisterCaller_SetsMetadata() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        assertEq(inft.getEncryptedURI(tokenId), ENCRYPTED_URI);
-        assertEq(inft.getMetadataHash(tokenId), METADATA_HASH);
+    function test_Mint_StoresDataHashes() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("data-proof");
+
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "caller-data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+        bytes32[] memory hashes = inft.dataHashesOf(tokenId);
+        assertEq(hashes.length, 1);
+        assertEq(hashes[0], keccak256(abi.encodePacked("data-proof")));
     }
 
-    function test_RegisterCaller_TracksCallerId() public {
-        inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        assertTrue(inft.isRegistered(CALLER_ID));
-        assertEq(inft.getTokenId(CALLER_ID), 1);
+    function test_Mint_StoresDescriptions() public {
+        bytes[] memory proofs = new bytes[](2);
+        proofs[0] = abi.encodePacked("proof1");
+        proofs[1] = abi.encodePacked("proof2");
+
+        string[] memory descriptions = new string[](2);
+        descriptions[0] = "profile";
+        descriptions[1] = "metadata";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+        string[] memory stored = inft.dataDescriptionsOf(tokenId);
+        assertEq(stored.length, 2);
+        assertEq(stored[0], "profile");
+        assertEq(stored[1], "metadata");
     }
 
-    function test_RegisterCaller_EmitsCallerRegistered() public {
-        vm.expectEmit(false, true, false, true);
-        emit CallerINFT.CallerRegistered(CALLER_ID, alice, 1);
-        inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-    }
+    function test_Mint_DefaultsMinterIfNoRecipient() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
 
-    function test_RegisterCaller_Reverts_DuplicateCaller() public {
-        inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        vm.expectRevert("CallerINFT: caller already registered");
-        inft.registerCaller(bob, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-    }
-
-    function test_RegisterCaller_Reverts_ZeroAddress() public {
-        vm.expectRevert("CallerINFT: zero address");
-        inft.registerCaller(address(0), CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-    }
-
-    function test_RegisterCaller_Reverts_NotOwner() public {
-        vm.prank(alice);
-        vm.expectRevert();
-        inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-    }
-
-    function test_RegisterCaller_MultipleCallers_IncrementTokenIds() public {
-        uint256 id1 = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        uint256 id2 = inft.registerCaller(bob, CALLER_ID_2, ENCRYPTED_URI, METADATA_HASH);
-        assertEq(id1, 1);
-        assertEq(id2, 2);
-    }
-
-    // ── updateMetadata ───────────────────────────────────────────────────────
-
-    function test_UpdateMetadata_ByTokenOwner() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes32 newHash = keccak256("updated-profile");
-        string memory newURI = "0g://testnet/updated-abc456";
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
 
         vm.prank(alice);
-        inft.updateMetadata(tokenId, newURI, newHash);
-
-        assertEq(inft.getEncryptedURI(tokenId), newURI);
-        assertEq(inft.getMetadataHash(tokenId), newHash);
+        uint256 tokenId = inft.mint(proofs, descriptions, address(0));
+        assertEq(inft.ownerOf(tokenId), alice);
     }
 
-    function test_UpdateMetadata_ByPlatformOwner() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes32 newHash = keccak256("platform-updated");
-        inft.updateMetadata(tokenId, "0g://testnet/platform-update", newHash);
-        assertEq(inft.getMetadataHash(tokenId), newHash);
+    function test_Mint_Reverts_LengthMismatch() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+
+        string[] memory descriptions = new string[](2);
+        descriptions[0] = "d1";
+        descriptions[1] = "d2";
+
+        vm.expectRevert("Length mismatch");
+        inft.mint(proofs, descriptions, alice);
     }
 
-    function test_UpdateMetadata_EmitsEvent() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes32 newHash = keccak256("updated");
-        vm.expectEmit(true, false, false, true);
-        emit CallerINFT.MetadataUpdated(tokenId, newHash);
-        inft.updateMetadata(tokenId, ENCRYPTED_URI, newHash);
+    // ── update ────────────────────────────────────────────────────────────────
+
+    function test_Update_ChangesDataHashes() public {
+        // Mint initial token
+        bytes[] memory initProofs = new bytes[](1);
+        initProofs[0] = abi.encodePacked("initial");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+        uint256 tokenId = inft.mint(initProofs, descriptions, alice);
+
+        // Update with new proofs
+        bytes[] memory newProofs = new bytes[](1);
+        newProofs[0] = abi.encodePacked("updated");
+
+        vm.prank(alice);
+        inft.update(tokenId, newProofs);
+
+        bytes32[] memory hashes = inft.dataHashesOf(tokenId);
+        assertEq(hashes[0], keccak256(abi.encodePacked("updated")));
     }
 
-    function test_UpdateMetadata_Reverts_Unauthorized() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
+    function test_Update_Reverts_NotOwner() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
         vm.prank(bob);
-        vm.expectRevert("CallerINFT: not authorized");
-        inft.updateMetadata(tokenId, ENCRYPTED_URI, METADATA_HASH);
+        vm.expectRevert("Not owner");
+        inft.update(tokenId, proofs);
     }
 
-    // ── secureTransfer ───────────────────────────────────────────────────────
+    // ── transfer ──────────────────────────────────────────────────────────────
 
-    function test_SecureTransfer_ChangesOwner() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes memory sealedKey = abi.encodePacked(keccak256("sealed-for-bob"));
-        bytes memory proof = bytes("valid-proof");
+    function test_Transfer_ChangesOwner() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
+        bytes[] memory transferProofs = new bytes[](1);
+        transferProofs[0] = abi.encodePacked(bob);
 
         vm.prank(alice);
-        inft.approve(address(this), tokenId);
-        inft.secureTransfer(alice, bob, tokenId, sealedKey, proof);
-
+        inft.transfer(bob, tokenId, transferProofs);
         assertEq(inft.ownerOf(tokenId), bob);
     }
 
-    function test_SecureTransfer_UpdatesMetadataHash() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes memory sealedKey = abi.encodePacked(keccak256("new-sealed-key"));
-        bytes memory proof = bytes("valid-proof");
+    function test_Transfer_Reverts_NotOwner() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
 
-        vm.prank(alice);
-        inft.approve(address(this), tokenId);
-        inft.secureTransfer(alice, bob, tokenId, sealedKey, proof);
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
 
-        assertEq(inft.getMetadataHash(tokenId), keccak256(sealedKey));
+        bytes[] memory transferProofs = new bytes[](1);
+        transferProofs[0] = abi.encodePacked("transfer-proof");
+
+        vm.prank(bob);
+        vm.expectRevert("Not owner");
+        inft.transfer(bob, tokenId, transferProofs);
     }
 
-    function test_SecureTransfer_Reverts_NotOwner() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes memory sealedKey = bytes("key");
-        bytes memory proof = bytes("proof");
+    // ── transferFrom ──────────────────────────────────────────────────────────
 
-        vm.expectRevert("CallerINFT: not owner");
-        inft.secureTransfer(bob, alice, tokenId, sealedKey, proof);
+    function test_TransferFrom_WithApproval() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
+        // Approve bob
+        vm.prank(alice);
+        inft.approve(bob, tokenId);
+
+        bytes[] memory transferProofs = new bytes[](1);
+        transferProofs[0] = abi.encodePacked(charlie);
+
+        vm.prank(bob);
+        inft.transferFrom(alice, charlie, tokenId, transferProofs);
+        assertEq(inft.ownerOf(tokenId), charlie);
     }
 
-    // ── authorizeUsage ───────────────────────────────────────────────────────
+    function test_TransferFrom_WithOperatorApproval() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
 
-    function test_AuthorizeUsage_GrantsPermissions() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        bytes memory perms = abi.encode("read", "inference");
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
 
+        // Approve all
         vm.prank(alice);
-        inft.authorizeUsage(tokenId, agent, perms);
+        inft.setApprovalForAll(bob, true);
 
-        assertTrue(inft.isAuthorized(tokenId, agent));
-        assertEq(inft.getPermissions(tokenId, agent), perms);
+        bytes[] memory transferProofs = new bytes[](1);
+        transferProofs[0] = abi.encodePacked(charlie);
+
+        vm.prank(bob);
+        inft.transferFrom(alice, charlie, tokenId, transferProofs);
+        assertEq(inft.ownerOf(tokenId), charlie);
     }
 
-    function test_AuthorizeUsage_EmitsEvent() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
+    function test_TransferFrom_Reverts_NotApproved() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
+        bytes[] memory transferProofs = new bytes[](1);
+        transferProofs[0] = abi.encodePacked("transfer-proof");
+
+        vm.prank(bob);
+        vm.expectRevert("Not approved");
+        inft.transferFrom(alice, charlie, tokenId, transferProofs);
+    }
+
+    // ── clone ─────────────────────────────────────────────────────────────────
+
+    function test_Clone_CreatesNewToken() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
+        bytes[] memory cloneProofs = new bytes[](1);
+        cloneProofs[0] = abi.encodePacked(bob);
+
         vm.prank(alice);
-        vm.expectEmit(true, true, false, false);
-        emit CallerINFT.UsageAuthorized(tokenId, agent);
-        inft.authorizeUsage(tokenId, agent, bytes("perms"));
+        uint256 newTokenId = inft.clone(bob, tokenId, cloneProofs);
+
+        assertEq(newTokenId, 2);
+        assertEq(inft.ownerOf(newTokenId), bob);
+    }
+
+    function test_Clone_CopiesDescriptions() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "original-data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
+        bytes[] memory cloneProofs = new bytes[](1);
+        cloneProofs[0] = abi.encodePacked(bob);
+
+        vm.prank(alice);
+        uint256 newTokenId = inft.clone(bob, tokenId, cloneProofs);
+
+        string[] memory newDescriptions = inft.dataDescriptionsOf(newTokenId);
+        assertEq(newDescriptions[0], "original-data");
+    }
+
+    // ── authorize usage ───────────────────────────────────────────────────────
+
+    function test_AuthorizeUsage_GrantsAccess() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
+        vm.prank(alice);
+        inft.authorizeUsage(tokenId, charlie);
+
+        address[] memory authorized = inft.authorizedUsersOf(tokenId);
+        assertEq(authorized.length, 1);
+        assertEq(authorized[0], charlie);
     }
 
     function test_AuthorizeUsage_Reverts_NotOwner() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+
         vm.prank(bob);
-        vm.expectRevert("CallerINFT: not owner");
-        inft.authorizeUsage(tokenId, agent, bytes("perms"));
+        vm.expectRevert("Not owner");
+        inft.authorizeUsage(tokenId, charlie);
     }
 
-    function test_IsAuthorized_ReturnsFalse_WhenNotGranted() public {
-        uint256 tokenId = inft.registerCaller(alice, CALLER_ID, ENCRYPTED_URI, METADATA_HASH);
-        assertFalse(inft.isAuthorized(tokenId, agent));
-    }
+    // ── approval functions ────────────────────────────────────────────────────
 
-    // ── oracle update ────────────────────────────────────────────────────────
+    function test_Approve_SetsApproved() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
 
-    function test_SetOracle_UpdatesOracle() public {
-        address newOracle = makeAddr("newOracle");
-        inft.setOracle(newOracle);
-        assertEq(inft.oracle(), newOracle);
-    }
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
 
-    function test_SetOracle_EmitsEvent() public {
-        address newOracle = makeAddr("newOracle");
-        vm.expectEmit(false, false, false, true);
-        emit CallerINFT.OracleUpdated(address(oracle), newOracle);
-        inft.setOracle(newOracle);
-    }
-
-    function test_SetOracle_Reverts_NotOwner() public {
         vm.prank(alice);
-        vm.expectRevert();
-        inft.setOracle(makeAddr("x"));
+        inft.approve(bob, tokenId);
+
+        assertEq(inft.getApproved(tokenId), bob);
     }
 
-    // ── view helpers ─────────────────────────────────────────────────────────
+    function test_SetApprovalForAll_GrantsAllTokens() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
 
-    function test_GetTokenId_Reverts_NotRegistered() public {
-        vm.expectRevert("CallerINFT: caller not registered");
-        inft.getTokenId("+10000000000");
+        inft.mint(proofs, descriptions, alice);
+
+        vm.prank(alice);
+        inft.setApprovalForAll(bob, true);
+
+        assertTrue(inft.isApprovedForAll(alice, bob));
     }
 
-    function test_IsRegistered_ReturnsFalse_BeforeRegistration() public view {
-        assertFalse(inft.isRegistered(CALLER_ID));
+    function test_SetApprovalForAll_CanRevoke() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        inft.mint(proofs, descriptions, alice);
+
+        vm.startPrank(alice);
+        inft.setApprovalForAll(bob, true);
+        assertTrue(inft.isApprovedForAll(alice, bob));
+        inft.setApprovalForAll(bob, false);
+        vm.stopPrank();
+
+        assertFalse(inft.isApprovedForAll(alice, bob));
+    }
+
+    // ── admin functions ───────────────────────────────────────────────────────
+
+    function test_UpdateURLs_ByAdmin() public {
+        inft.updateURLs("https://new-chain.0g.ai", "https://new-indexer.0g.ai");
+        // Verify by checking tokenURI output
+    }
+
+    function test_UpdateVerifier_ByAdmin() public {
+        MockVerifier newVerifier = new MockVerifier();
+        inft.updateVerifier(address(newVerifier));
+        assertEq(address(inft.verifier()), address(newVerifier));
+    }
+
+    // ── edge cases ────────────────────────────────────────────────────────────
+
+    function test_OwnerOf_Reverts_TokenNotExist() public {
+        vm.expectRevert("Token not exist");
+        inft.ownerOf(999);
+    }
+
+    function test_DataHashesOf_Reverts_TokenNotExist() public {
+        vm.expectRevert("Token not exist");
+        inft.dataHashesOf(999);
+    }
+
+    function test_TokenURI_Returns() public {
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = abi.encodePacked("proof");
+        string[] memory descriptions = new string[](1);
+        descriptions[0] = "data";
+
+        uint256 tokenId = inft.mint(proofs, descriptions, alice);
+        string memory uri = inft.tokenURI(tokenId);
+        assertTrue(bytes(uri).length > 0);
     }
 }
