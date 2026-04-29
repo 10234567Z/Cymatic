@@ -11,13 +11,14 @@ import json
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Form, Query, WebSocket
+from fastapi import APIRouter, Depends, Form, Query, WebSocket
 from fastapi.responses import Response
 from twilio.twiml.voice_response import Gather, VoiceResponse
 
 from app.config import settings
 from app.core import auth
 from app.core import session as session_store
+from app.core.twilio_security import validate_twilio_signature
 from app.models.session import CallState
 from app.models.user import NewUserInput
 from app.services import supabase_client
@@ -38,7 +39,7 @@ def _xml(vr: VoiceResponse) -> Response:
     return Response(content=str(vr), media_type="application/xml")
 
 
-@router.post("/inbound")
+@router.post("/inbound", dependencies=[Depends(validate_twilio_signature)])
 async def inbound(
     CallSid: Annotated[str, Form()],
     From: Annotated[str, Form()],
@@ -75,7 +76,7 @@ async def inbound(
     return _xml(vr)
 
 
-@router.post("/pin")
+@router.post("/pin", dependencies=[Depends(validate_twilio_signature)])
 async def pin(
     CallSid: Annotated[str, Form()],
     Digits: Annotated[str, Form()] = "",
