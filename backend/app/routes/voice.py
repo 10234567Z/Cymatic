@@ -3,15 +3,14 @@ Twilio voice webhook routes.
 
 Flow:
   POST /voice/inbound  — Twilio rings → detect new/existing user → ask for PIN
-  POST /voice/pin      — DTMF digits arrive → verify or create user + wallet → start stream
-  WS   /voice/stream   — Twilio Media Stream → forward to platform_agents → TTS back
+  POST /voice/pin      — DTMF digits arrive → verify or create user + wallet
+  POST /voice/chat     — Twilio posts speech transcript → call agents → speak reply → listen again
 """
 
-import json
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Form, Query, WebSocket
+from fastapi import APIRouter, Depends, Form
 from fastapi.responses import Response
 from twilio.twiml.voice_response import Gather, VoiceResponse
 
@@ -29,10 +28,20 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 MAX_PIN_ATTEMPTS = 3
 
 
-def _stream_url(call_sid: str) -> str:
-    """Build the wss:// URL for Twilio to connect the Media Stream."""
-    base = settings.BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
-    return f"{base}/voice/stream?callSid={call_sid}"
+def _chat_gather(vr: VoiceResponse, prompt: str) -> None:
+    """Append a speech Gather to vr, speaking prompt while listening."""
+    gather = Gather(
+        input="speech",
+        action=f"{settings.BASE_URL}/voice/chat",
+        method="POST",
+        speechTimeout="auto",
+        language="en-US",
+    )
+    gather.say(prompt)
+    vr.append(gather)
+    # Fallback if nothing was heard
+    vr.say("I didn't catch that. Goodbye.")
+    vr.hangup()
 
 
 def _xml(vr: VoiceResponse) -> Response:
@@ -109,12 +118,12 @@ async def pin(
                 user_id=user.id,
                 wallet_address=wallet["address"],
             )
-            vr.say(
+            _chat_gather(
+                vr,
                 "Your vault is ready. "
-                "You can now check your balance, transfer tokens, or monitor your positions. "
-                "Please speak your request after the tone."
+                "You can check your balance, transfer tokens, or monitor your Aave position. "
+                "What would you like to do?",
             )
-            vr.connect().stream(url=_stream_url(CallSid))
         except Exception:
             vr.say("We couldn't set up your vault right now. Please call back.")
             vr.hangup()
@@ -132,11 +141,7 @@ async def pin(
                 user_id=user.id,
                 wallet_address=user.wallet_address,
             )
-            vr.say(
-                "Authenticated. "
-                "Please speak your request after the tone."
-            )
-            vr.connect().stream(url=_stream_url(CallSid))
+            _chat_gather(vr, "Authenticated. What would you like to do?")
             return _xml(vr)
 
         # Wrong PIN
@@ -172,68 +177,43 @@ async def pin(
     return _xml(vr)
 
 
-@router.websocket("/stream")
-async def stream(websocket: WebSocket, callSid: str = Query(...)) -> None:
+@router.post("/chat", dependencies=[Depends(validate_twilio_signature)])
+async def chat(
+    CallSid: Annotated[str, Form()],
+    SpeechResult: Annotated[str, Form()] = "",
+) -> Response:
     """
-    Twilio Media Stream WebSocket.
-
-    Twilio sends JSON frames (start / media / stop).
-    We forward each frame to platform_agents, then on stop we play back
-    the TTS audio payloads Twilio-style over the same socket.
+    Twilio posts here after the caller finishes speaking.
+    SpeechResult contains the transcript. We call platform_agents,
+    speak the reply, then listen again for the next turn.
     """
-    await websocket.accept()
-    stream_sid: str | None = None
+    sess = session_store.get(CallSid)
+    vr = VoiceResponse()
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        while True:
-            try:
-                raw = await websocket.receive_text()
-            except Exception:
-                break
+    if not sess or sess.state != CallState.AUTHENTICATED:
+        vr.say("Session expired. Please call back.")
+        vr.hangup()
+        return _xml(vr)
 
-            event: dict = json.loads(raw)
-            event_type = event.get("event")
+    if not SpeechResult.strip():
+        _chat_gather(vr, "I didn't catch that. What would you like to do?")
+        return _xml(vr)
 
-            if event_type == "start":
-                stream_sid = (event.get("start") or {}).get("streamSid")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{settings.PLATFORM_AGENTS_URL}/agents/voice/process-text",
+                json={
+                    "callSid": CallSid,
+                    "caller": sess.phone_number,
+                    "text": SpeechResult,
+                },
+            )
+            resp.raise_for_status()
+            result = resp.json()
+        spoken = result.get("responseText") or "Request completed."
+    except Exception:
+        spoken = "Sorry, I had trouble processing that. Please try again."
 
-            sess = session_store.get(callSid)
-            if not sess or sess.state != CallState.AUTHENTICATED:
-                if event_type == "stop":
-                    break
-                continue
-
-            try:
-                resp = await client.post(
-                    f"{settings.PLATFORM_AGENTS_URL}/agents/voice/process-twilio-event",
-                    json={
-                        "callSid": callSid,
-                        "caller": sess.phone_number,
-                        "event": event,
-                    },
-                )
-                resp.raise_for_status()
-                result = resp.json()
-            except Exception:
-                if event_type == "stop":
-                    break
-                continue
-
-            # On stop: play back TTS audio then close
-            if event_type == "stop" and stream_sid:
-                payloads = (result.get("result") or {}).get("twilioMediaPayloads", [])
-                for payload in payloads:
-                    await websocket.send_text(
-                        json.dumps({
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": payload},
-                        })
-                    )
-                await websocket.send_text(
-                    json.dumps({"event": "stop", "streamSid": stream_sid})
-                )
-                session_store.destroy(callSid)
-                break
-
-    await websocket.close()
+    _chat_gather(vr, f"{spoken}  Anything else I can help you with?")
+    return _xml(vr)
