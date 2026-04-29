@@ -1,181 +1,337 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
-/// @notice Minimal oracle interface for ERC-7857 proof verification.
-interface IOracle {
-    function verifyProof(bytes calldata proof) external view returns (bool);
-}
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "./interfaces/IERC7857.sol";
+import "./interfaces/IERC7857Metadata.sol";
+import "./interfaces/IERC7857DataVerifier.sol";
 
 /// @title CallerINFT
-/// @notice ERC-7857-aligned INFT for caller identity on the Cymatic platform.
-///         Each phone caller gets exactly one token. The encrypted URI points to
-///         caller profile metadata (preferences, history) stored on 0G Storage.
-///         Metadata hash commits to the current encrypted payload.
-contract CallerINFT is ERC721, Ownable, ReentrancyGuard {
-    // ── State ────────────────────────────────────────────────────────────────
+/// @notice ERC-7857 compliant agent NFT for Cymatic caller identity.
+///         Each phone caller gets exactly one token with encrypted metadata
+///         backed by cryptographic proofs and 0G Storage.
+contract CallerINFT is AccessControl, IERC7857, IERC7857Metadata {
+    error ZeroVerifierAddress();
+    error ZeroAddress();
+    error LengthMismatch();
+    error InvalidPreimageProof();
+    error InvalidTransferValidityProof();
+    error ReceiverMismatch();
+    error NotOwner();
+    error NotApproved();
+    error TokenNotExist();
 
-    /// @dev Encrypted 0G Storage URI per token.
-    mapping(uint256 => string) private _encryptedURIs;
+    struct TokenData {
+        address owner;
+        string[] dataDescriptions;
+        bytes32[] dataHashes;
+        address[] authorizedUsers;
+        address approvedUser;
+    }
 
-    /// @dev Committed hash of the encrypted metadata per token.
-    mapping(uint256 => bytes32) private _metadataHashes;
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
-    /// @dev Authorizations: tokenId → executor → permissions blob.
-    mapping(uint256 => mapping(address => bytes)) private _authorizations;
-
-    /// @dev Caller identifier (e.g. E.164 phone number) → tokenId.
-    mapping(string => uint256) private _callerTokenIds;
-
-    /// @dev Whether a given caller has a token.
-    mapping(string => bool) private _callerRegistered;
-
-    /// @dev Oracle that verifies re-encryption proofs on transfers.
-    address public oracle;
-
+    mapping(uint256 => TokenData) private _tokens;
+    mapping(address => mapping(address => bool)) private _operatorApprovals;
     uint256 private _nextTokenId = 1;
 
-    // ── Events ───────────────────────────────────────────────────────────────
+    string public tokenName;
+    string public tokenSymbol;
+    string public chainURL;
+    string public indexerURL;
+    IERC7857DataVerifier public verifier;
 
-    event CallerRegistered(string indexed callerId, address indexed to, uint256 tokenId);
-    event MetadataUpdated(uint256 indexed tokenId, bytes32 newHash);
-    event UsageAuthorized(uint256 indexed tokenId, address indexed executor);
-    event OracleUpdated(address oldOracle, address newOracle);
+    // ─ Constructor ─
 
-    // ── Constructor ──────────────────────────────────────────────────────────
+    constructor(
+        string memory name_,
+        string memory symbol_,
+        address verifierAddr,
+        string memory chainURL_,
+        string memory indexerURL_
+    ) {
+        if (verifierAddr == address(0)) revert ZeroVerifierAddress();
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
 
-    constructor(address _oracle) ERC721("Cymatic Caller Identity", "CAID") Ownable(msg.sender) {
-        oracle = _oracle;
+        tokenName = name_;
+        tokenSymbol = symbol_;
+        chainURL = chainURL_;
+        indexerURL = indexerURL_;
+        verifier = IERC7857DataVerifier(verifierAddr);
     }
 
-    // ── Admin ────────────────────────────────────────────────────────────────
+    // ─ Basic getters ─
 
-    function setOracle(address newOracle) external onlyOwner {
-        emit OracleUpdated(oracle, newOracle);
-        oracle = newOracle;
+    function name() public view virtual returns (string memory) {
+        return tokenName;
     }
 
-    // ── Minting ──────────────────────────────────────────────────────────────
-
-    /// @notice Register a new caller and mint their identity INFT.
-    ///         Only the platform owner (backend deployer key) can call this.
-    /// @param to           Wallet to receive the token (can be the platform wallet initially).
-    /// @param callerId     Unique caller identifier, e.g. "+14155552671".
-    /// @param encryptedURI 0G Storage URI of the AES-256-GCM encrypted profile.
-    /// @param metadataHash keccak256 of the encrypted payload for on-chain commitment.
-    function registerCaller(
-        address to,
-        string calldata callerId,
-        string calldata encryptedURI,
-        bytes32 metadataHash
-    ) external onlyOwner returns (uint256 tokenId) {
-        require(!_callerRegistered[callerId], "CallerINFT: caller already registered");
-        require(to != address(0), "CallerINFT: zero address");
-
-        tokenId = _nextTokenId++;
-        _safeMint(to, tokenId);
-        _encryptedURIs[tokenId] = encryptedURI;
-        _metadataHashes[tokenId] = metadataHash;
-        _callerTokenIds[callerId] = tokenId;
-        _callerRegistered[callerId] = true;
-
-        emit CallerRegistered(callerId, to, tokenId);
+    function symbol() public view virtual returns (string memory) {
+        return tokenSymbol;
     }
 
-    // ── Metadata update ──────────────────────────────────────────────────────
+    // ─ Admin functions ─
 
-    /// @notice Update caller profile after a call (new encrypted URI + hash).
-    ///         Only the token owner or platform owner can update.
-    function updateMetadata(
-        uint256 tokenId,
-        string calldata newEncryptedURI,
-        bytes32 newMetadataHash
-    ) external {
-        require(
-            ownerOf(tokenId) == msg.sender || owner() == msg.sender,
-            "CallerINFT: not authorized"
-        );
-        _encryptedURIs[tokenId] = newEncryptedURI;
-        _metadataHashes[tokenId] = newMetadataHash;
-        emit MetadataUpdated(tokenId, newMetadataHash);
+    function updateVerifier(address newVerifier) public virtual onlyRole(ADMIN_ROLE) {
+        if (newVerifier == address(0)) revert ZeroAddress();
+        verifier = IERC7857DataVerifier(newVerifier);
     }
 
-    // ── ERC-7857 transfer with re-encryption ────────────────────────────────
+    function updateURLs(string memory newChainURL, string memory newIndexerURL)
+        public
+        virtual
+        onlyRole(ADMIN_ROLE)
+    {
+        chainURL = newChainURL;
+        indexerURL = newIndexerURL;
+    }
 
-    /// @notice Transfer token to a new owner with oracle-verified re-encrypted metadata.
-    /// @param from      Current owner.
-    /// @param to        New owner.
-    /// @param tokenId   Token to transfer.
-    /// @param sealedKey New encryption key sealed for the recipient's public key.
-    /// @param proof     Oracle proof attesting the re-encryption was correct.
-    function secureTransfer(
-        address from,
-        address to,
-        uint256 tokenId,
-        bytes calldata sealedKey,
-        bytes calldata proof
-    ) external nonReentrant {
-        require(ownerOf(tokenId) == from, "CallerINFT: not owner");
-        require(to != address(0), "CallerINFT: zero address");
-        require(IOracle(oracle).verifyProof(proof), "CallerINFT: invalid oracle proof");
+    // ─ Core ERC-7857 functions ─
 
-        // Commit new metadata hash derived from the sealed key.
-        bytes32 newHash = keccak256(sealedKey);
-        _metadataHashes[tokenId] = newHash;
-
-        // If proof carries a new encrypted URI (length > 32), extract it.
-        if (proof.length > 32) {
-            _encryptedURIs[tokenId] = string(proof[32:]);
+    function mint(bytes[] calldata proofs, string[] calldata dataDescriptions, address to)
+        public
+        payable
+        virtual
+        returns (uint256 tokenId)
+    {
+        if (dataDescriptions.length != proofs.length) revert LengthMismatch();
+        if (to == address(0)) {
+            to = msg.sender;
         }
 
-        _transfer(from, to, tokenId);
-        emit MetadataUpdated(tokenId, newHash);
+        PreimageProofOutput[] memory proofOutputs = verifier.verifyPreimage(proofs);
+        bytes32[] memory dataHashes = new bytes32[](proofOutputs.length);
+
+        for (uint256 i = 0; i < proofOutputs.length; i++) {
+            if (!proofOutputs[i].isValid) revert InvalidPreimageProof();
+            dataHashes[i] = proofOutputs[i].dataHash;
+        }
+
+        tokenId = _nextTokenId++;
+        _tokens[tokenId] = TokenData({
+            owner: to,
+            dataHashes: dataHashes,
+            dataDescriptions: dataDescriptions,
+            authorizedUsers: new address[](0),
+            approvedUser: address(0)
+        });
+
+        emit Minted(tokenId, msg.sender, to, dataHashes, dataDescriptions);
     }
 
-    // ── Authorized usage (AIaaS / agent delegation) ──────────────────────────
+    function update(uint256 tokenId, bytes[] calldata proofs) public virtual {
+        TokenData storage token = _tokens[tokenId];
+        if (token.owner != msg.sender) revert NotOwner();
 
-    /// @notice Grant an executor (e.g. the platform agent) permission to use this INFT.
-    /// @param tokenId     The caller's token.
-    /// @param executor    Address to authorise (e.g. platform agent contract or wallet).
-    /// @param permissions ABI-encoded permissions blob (checked off-chain by the executor).
-    function authorizeUsage(
-        uint256 tokenId,
-        address executor,
-        bytes calldata permissions
-    ) external {
-        require(ownerOf(tokenId) == msg.sender, "CallerINFT: not owner");
-        _authorizations[tokenId][executor] = permissions;
-        emit UsageAuthorized(tokenId, executor);
+        PreimageProofOutput[] memory proofOutputs = verifier.verifyPreimage(proofs);
+        bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
+
+        for (uint256 i = 0; i < proofOutputs.length; i++) {
+            if (!proofOutputs[i].isValid) revert InvalidPreimageProof();
+            newDataHashes[i] = proofOutputs[i].dataHash;
+        }
+
+        bytes32[] memory oldDataHashes = token.dataHashes;
+        token.dataHashes = newDataHashes;
+
+        emit Updated(tokenId, oldDataHashes, newDataHashes);
     }
 
-    /// @notice Check whether an executor is authorised for a token.
-    function isAuthorized(uint256 tokenId, address executor) external view returns (bool) {
-        return _authorizations[tokenId][executor].length > 0;
+    function transfer(address to, uint256 tokenId, bytes[] calldata proofs) public virtual {
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
+
+        TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
+        bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
+        bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
+
+        for (uint256 i = 0; i < proofOutputs.length; i++) {
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
+            sealedKeys[i] = proofOutputs[i].sealedKey;
+            newDataHashes[i] = proofOutputs[i].newDataHash;
+        }
+
+        _tokens[tokenId].owner = to;
+        _tokens[tokenId].dataHashes = newDataHashes;
+
+        emit Transferred(tokenId, msg.sender, to);
+        emit PublishedSealedKey(to, tokenId, sealedKeys);
     }
 
-    // ── Views ────────────────────────────────────────────────────────────────
+    function transferFrom(address from, address to, uint256 tokenId, bytes[] calldata proofs)
+        public
+        virtual
+    {
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != from) revert NotOwner();
+        if (!(
+            _tokens[tokenId].approvedUser == msg.sender || _tokens[tokenId].owner == msg.sender
+                || _operatorApprovals[from][msg.sender]
+        )) revert NotApproved();
 
-    function getTokenId(string calldata callerId) external view returns (uint256) {
-        require(_callerRegistered[callerId], "CallerINFT: caller not registered");
-        return _callerTokenIds[callerId];
+        TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
+        bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
+        bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
+
+        for (uint256 i = 0; i < proofOutputs.length; i++) {
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
+            sealedKeys[i] = proofOutputs[i].sealedKey;
+            newDataHashes[i] = proofOutputs[i].newDataHash;
+        }
+
+        _tokens[tokenId].owner = to;
+        _tokens[tokenId].dataHashes = newDataHashes;
+
+        emit Transferred(tokenId, from, to);
+        emit PublishedSealedKey(to, tokenId, sealedKeys);
     }
 
-    function isRegistered(string calldata callerId) external view returns (bool) {
-        return _callerRegistered[callerId];
+    function clone(address to, uint256 tokenId, bytes[] calldata proofs)
+        public
+        virtual
+        returns (uint256)
+    {
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
+
+        TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
+        bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
+        bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
+
+        for (uint256 i = 0; i < proofOutputs.length; i++) {
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
+            sealedKeys[i] = proofOutputs[i].sealedKey;
+            newDataHashes[i] = proofOutputs[i].newDataHash;
+        }
+
+        uint256 newTokenId = _nextTokenId++;
+        _tokens[newTokenId] = TokenData({
+            owner: to,
+            dataHashes: newDataHashes,
+            dataDescriptions: _tokens[tokenId].dataDescriptions,
+            authorizedUsers: new address[](0),
+            approvedUser: address(0)
+        });
+
+        emit Cloned(tokenId, newTokenId, msg.sender, to);
+        emit PublishedSealedKey(to, newTokenId, sealedKeys);
+        return newTokenId;
     }
 
-    function getEncryptedURI(uint256 tokenId) external view returns (string memory) {
-        return _encryptedURIs[tokenId];
+    function cloneFrom(address from, address to, uint256 tokenId, bytes[] calldata proofs)
+        public
+        virtual
+        returns (uint256)
+    {
+        if (to == address(0)) revert ZeroAddress();
+        if (_tokens[tokenId].owner != from) revert NotOwner();
+        if (!(
+            _tokens[tokenId].approvedUser == msg.sender || _tokens[tokenId].owner == msg.sender
+                || _operatorApprovals[from][msg.sender]
+        )) revert NotApproved();
+
+        TransferValidityProofOutput[] memory proofOutputs = verifier.verifyTransferValidity(proofs);
+        bytes32[] memory newDataHashes = new bytes32[](proofOutputs.length);
+        bytes16[] memory sealedKeys = new bytes16[](proofOutputs.length);
+
+        for (uint256 i = 0; i < proofOutputs.length; i++) {
+            if (!proofOutputs[i].isValid) revert InvalidTransferValidityProof();
+            if (proofOutputs[i].receiver != to) revert ReceiverMismatch();
+            sealedKeys[i] = proofOutputs[i].sealedKey;
+            newDataHashes[i] = proofOutputs[i].newDataHash;
+        }
+
+        uint256 newTokenId = _nextTokenId++;
+        _tokens[newTokenId] = TokenData({
+            owner: to,
+            dataHashes: newDataHashes,
+            dataDescriptions: _tokens[tokenId].dataDescriptions,
+            authorizedUsers: new address[](0),
+            approvedUser: address(0)
+        });
+
+        emit Cloned(tokenId, newTokenId, msg.sender, to);
+        emit PublishedSealedKey(to, newTokenId, sealedKeys);
+        return newTokenId;
     }
 
-    function getMetadataHash(uint256 tokenId) external view returns (bytes32) {
-        return _metadataHashes[tokenId];
+    function authorizeUsage(uint256 tokenId, address user) public virtual {
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
+        _tokens[tokenId].authorizedUsers.push(user);
+        emit Authorization(msg.sender, user, tokenId);
     }
 
-    function getPermissions(uint256 tokenId, address executor) external view returns (bytes memory) {
-        return _authorizations[tokenId][executor];
+    // ─ Approval functions ─
+
+    function approve(address to, uint256 tokenId) public virtual {
+        if (_tokens[tokenId].owner != msg.sender) revert NotOwner();
+        _tokens[tokenId].approvedUser = to;
+        emit Approval(msg.sender, to, tokenId);
     }
+
+    function setApprovalForAll(address to, bool approved) public virtual {
+        _operatorApprovals[msg.sender][to] = approved;
+        emit ApprovalForAll(msg.sender, to, approved);
+    }
+
+    function getApproved(uint256 tokenId) public view virtual returns (address operator) {
+        return _tokens[tokenId].approvedUser;
+    }
+
+    function isApprovedForAll(address owner, address operator)
+        public
+        view
+        virtual
+        returns (bool)
+    {
+        return _operatorApprovals[owner][operator];
+    }
+
+    // ─ Views ─
+
+    function ownerOf(uint256 tokenId) public view virtual returns (address) {
+        TokenData storage token = _tokens[tokenId];
+        if (token.owner == address(0)) revert TokenNotExist();
+        return token.owner;
+    }
+
+    function authorizedUsersOf(uint256 tokenId) public view virtual returns (address[] memory) {
+        TokenData storage token = _tokens[tokenId];
+        if (token.owner == address(0)) revert TokenNotExist();
+        return token.authorizedUsers;
+    }
+
+    function dataHashesOf(uint256 tokenId) public view virtual returns (bytes32[] memory) {
+        TokenData storage token = _tokens[tokenId];
+        if (token.owner == address(0)) revert TokenNotExist();
+        return token.dataHashes;
+    }
+
+    function dataDescriptionsOf(uint256 tokenId)
+        public
+        view
+        virtual
+        returns (string[] memory)
+    {
+        TokenData storage token = _tokens[tokenId];
+        if (token.owner == address(0)) revert TokenNotExist();
+        return token.dataDescriptions;
+    }
+
+    function tokenURI(uint256 tokenId) public view virtual returns (string memory) {
+        if (!_exists(tokenId)) revert TokenNotExist();
+        return string(
+            abi.encodePacked('{"chainURL":"', chainURL, '","indexerURL":"', indexerURL, '"}')
+        );
+    }
+
+    function _exists(uint256 tokenId) internal view returns (bool) {
+        return _tokens[tokenId].owner != address(0);
+    }
+
+    string public constant VERSION = "1.0.0";
 }
