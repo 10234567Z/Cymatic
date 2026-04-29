@@ -3,12 +3,15 @@ Twilio voice webhook routes.
 
 Flow:
   POST /voice/inbound  — Twilio rings → detect new/existing user → ask for PIN
-  POST /voice/pin      — DTMF digits arrive → verify or create user + wallet → greet
+  POST /voice/pin      — DTMF digits arrive → verify or create user + wallet → start stream
+  WS   /voice/stream   — Twilio Media Stream → forward to platform_agents → TTS back
 """
 
+import json
 from typing import Annotated
 
-from fastapi import APIRouter, Form
+import httpx
+from fastapi import APIRouter, Form, Query, WebSocket
 from fastapi.responses import Response
 from twilio.twiml.voice_response import Gather, VoiceResponse
 
@@ -23,6 +26,12 @@ from app.services.turnkey import create_wallet
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 MAX_PIN_ATTEMPTS = 3
+
+
+def _stream_url(call_sid: str) -> str:
+    """Build the wss:// URL for Twilio to connect the Media Stream."""
+    base = settings.BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
+    return f"{base}/voice/stream?callSid={call_sid}"
 
 
 def _xml(vr: VoiceResponse) -> Response:
@@ -102,8 +111,9 @@ async def pin(
             vr.say(
                 "Your vault is ready. "
                 "You can now check your balance, transfer tokens, or monitor your positions. "
-                "What would you like to do?"
+                "Please speak your request after the tone."
             )
+            vr.connect().stream(url=_stream_url(CallSid))
         except Exception:
             vr.say("We couldn't set up your vault right now. Please call back.")
             vr.hangup()
@@ -123,9 +133,9 @@ async def pin(
             )
             vr.say(
                 "Authenticated. "
-                "What would you like to do? "
-                "You can check your balance, transfer tokens, or check your Aave health."
+                "Please speak your request after the tone."
             )
+            vr.connect().stream(url=_stream_url(CallSid))
             return _xml(vr)
 
         # Wrong PIN
@@ -159,3 +169,70 @@ async def pin(
     vr.say("Unexpected session state. Please call back.")
     vr.hangup()
     return _xml(vr)
+
+
+@router.websocket("/stream")
+async def stream(websocket: WebSocket, callSid: str = Query(...)) -> None:
+    """
+    Twilio Media Stream WebSocket.
+
+    Twilio sends JSON frames (start / media / stop).
+    We forward each frame to platform_agents, then on stop we play back
+    the TTS audio payloads Twilio-style over the same socket.
+    """
+    await websocket.accept()
+    stream_sid: str | None = None
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except Exception:
+                break
+
+            event: dict = json.loads(raw)
+            event_type = event.get("event")
+
+            if event_type == "start":
+                stream_sid = (event.get("start") or {}).get("streamSid")
+
+            sess = session_store.get(callSid)
+            if not sess or sess.state != CallState.AUTHENTICATED:
+                if event_type == "stop":
+                    break
+                continue
+
+            try:
+                resp = await client.post(
+                    f"{settings.PLATFORM_AGENTS_URL}/agents/voice/process-twilio-event",
+                    json={
+                        "callSid": callSid,
+                        "caller": sess.phone_number,
+                        "event": event,
+                    },
+                )
+                resp.raise_for_status()
+                result = resp.json()
+            except Exception:
+                if event_type == "stop":
+                    break
+                continue
+
+            # On stop: play back TTS audio then close
+            if event_type == "stop" and stream_sid:
+                payloads = (result.get("result") or {}).get("twilioMediaPayloads", [])
+                for payload in payloads:
+                    await websocket.send_text(
+                        json.dumps({
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": payload},
+                        })
+                    )
+                await websocket.send_text(
+                    json.dumps({"event": "stop", "streamSid": stream_sid})
+                )
+                session_store.destroy(callSid)
+                break
+
+    await websocket.close()
