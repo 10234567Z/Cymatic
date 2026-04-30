@@ -15,4 +15,5 @@ class CallSession(BaseModel):
     state: CallState
     user_id: Optional[str] = None        # set once user is found/created
     wallet_address: Optional[str] = None # set once user is found/created
+    sub_org_id: Optional[str] = None     # Turnkey sub-org for signing
     pin_attempts: int = 0

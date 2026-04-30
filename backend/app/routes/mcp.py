@@ -92,3 +92,30 @@ async def monitor(req: MonitorRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class InternalTransferRequest(BaseModel):
+    sub_org_id: str
+    from_address: str
+    to_address: str
+    token_address: str
+    amount_units: int
+    chain_id: int
+
+
+@router.post("/internal/transfer")
+def internal_transfer(req: InternalTransferRequest):
+    """Sign and broadcast an ERC20 transfer via Turnkey (called by platform_agents)."""
+    from app.services.turnkey import sign_and_broadcast_erc20
+    try:
+        tx_hash = sign_and_broadcast_erc20(
+            sub_org_id=req.sub_org_id,
+            from_address=req.from_address,
+            to_address=req.to_address,
+            token_address=req.token_address,
+            amount_units=req.amount_units,
+            chain_id=req.chain_id,
+        )
+        return {"txHash": tx_hash, "status": "submitted"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

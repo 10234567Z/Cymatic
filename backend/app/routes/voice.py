@@ -110,6 +110,7 @@ async def pin(
                     pin_hash=pin_hash,
                     turnkey_wallet_id=wallet["wallet_id"],
                     wallet_address=wallet["address"],
+                    sub_org_id=wallet["sub_org_id"],
                 )
             )
             session_store.update(
@@ -117,6 +118,7 @@ async def pin(
                 state=CallState.AUTHENTICATED,
                 user_id=user.id,
                 wallet_address=wallet["address"],
+                sub_org_id=wallet["sub_org_id"],
             )
             _chat_gather(
                 vr,
@@ -124,7 +126,10 @@ async def pin(
                 "You can check your balance, transfer tokens, or monitor your Aave position. "
                 "What would you like to do?",
             )
-        except Exception:
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            print(f"[vault setup error] {exc}")
             vr.say("We couldn't set up your vault right now. Please call back.")
             vr.hangup()
 
@@ -140,6 +145,7 @@ async def pin(
                 state=CallState.AUTHENTICATED,
                 user_id=user.id,
                 wallet_address=user.wallet_address,
+                sub_org_id=user.sub_org_id,
             )
             _chat_gather(vr, "Authenticated. What would you like to do?")
             return _xml(vr)
@@ -207,13 +213,25 @@ async def chat(
                     "callSid": CallSid,
                     "caller": sess.phone_number,
                     "text": SpeechResult,
+                    "walletAddress": sess.wallet_address or "",
+                    "subOrgId": sess.sub_org_id or "",
                 },
             )
             resp.raise_for_status()
             result = resp.json()
+        import logging; logging.getLogger("voice").warning("[chat] platform_agents result: %s", result)
         spoken = result.get("responseText") or "Request completed."
-    except Exception:
+        hangup = result.get("hangup", False)
+    except Exception as exc:
+        import logging, traceback
+        logging.getLogger("voice").error("[chat] platform_agents call failed: %s\n%s", exc, traceback.format_exc())
         spoken = "Sorry, I had trouble processing that. Please try again."
+        hangup = False
 
-    _chat_gather(vr, f"{spoken}  Anything else I can help you with?")
+    if hangup:
+        vr.say(spoken)
+        session_store.destroy(CallSid)
+        vr.hangup()
+    else:
+        _chat_gather(vr, f"{spoken}  Anything else I can help you with?")
     return _xml(vr)

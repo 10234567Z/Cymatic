@@ -20,6 +20,120 @@ from app.config import settings
 
 _BASE_URL = "https://api.turnkey.com"
 
+_CHAIN_RPC: dict[str, str] = {
+    "1": "https://cloudflare-eth.com",
+    "8453": "https://mainnet.base.org",
+    "84532": "https://sepolia.base.org",
+    "11155111": "https://rpc.sepolia.org",
+    "42161": "https://arb1.arbitrum.io/rpc",
+}
+
+_ERC20_TRANSFER_SELECTOR = bytes.fromhex("a9059cbb")
+
+
+def _rlp_encode(item: Any) -> bytes:
+    if isinstance(item, int):
+        item = b"" if item == 0 else item.to_bytes((item.bit_length() + 7) // 8, "big")
+    if isinstance(item, bytes):
+        if len(item) == 1 and item[0] < 0x80:
+            return item
+        length = len(item)
+        if length <= 55:
+            return bytes([0x80 + length]) + item
+        lb = length.to_bytes((length.bit_length() + 7) // 8, "big")
+        return bytes([0xb7 + len(lb)]) + lb + item
+    if isinstance(item, list):
+        encoded = b"".join(_rlp_encode(i) for i in item)
+        length = len(encoded)
+        if length <= 55:
+            return bytes([0xc0 + length]) + encoded
+        lb = length.to_bytes((length.bit_length() + 7) // 8, "big")
+        return bytes([0xf7 + len(lb)]) + lb + encoded
+    raise TypeError(f"Cannot RLP encode {type(item)}")
+
+
+def _rpc_call(rpc_url: str, method: str, params: list) -> Any:
+    resp = httpx.post(
+        rpc_url,
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(f"RPC error: {data['error']}")
+    return data["result"]
+
+
+def sign_and_broadcast_erc20(
+    sub_org_id: str,
+    from_address: str,
+    to_address: str,
+    token_address: str,
+    amount_units: int,
+    chain_id: int,
+) -> str:
+    """Sign an ERC20 transfer via Turnkey and broadcast it. Returns tx hash."""
+    rpc_url = _CHAIN_RPC.get(str(chain_id))
+    if not rpc_url:
+        raise ValueError(f"Unsupported chain_id: {chain_id}")
+
+    nonce = int(_rpc_call(rpc_url, "eth_getTransactionCount", [from_address, "latest"]), 16)
+
+    try:
+        fee_history = _rpc_call(rpc_url, "eth_feeHistory", [1, "latest", [50]])
+        base_fee = int(fee_history["baseFeePerGas"][-1], 16)
+        max_priority = 1_000_000_000  # 1 gwei
+        max_fee = base_fee * 2 + max_priority
+    except Exception:
+        gp = int(_rpc_call(rpc_url, "eth_gasPrice", []), 16)
+        max_priority = gp
+        max_fee = gp
+
+    calldata = (
+        _ERC20_TRANSFER_SELECTOR
+        + bytes.fromhex(to_address[2:].lower().zfill(64))
+        + amount_units.to_bytes(32, "big")
+    )
+
+    unsigned_tx = b"\x02" + _rlp_encode([
+        chain_id, nonce, max_priority, max_fee, 100_000,
+        bytes.fromhex(token_address[2:].lower()), 0, calldata, [],
+    ])
+
+    body: dict[str, Any] = {
+        "type": "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
+        "timestampMs": str(int(time.time() * 1000)),
+        "organizationId": sub_org_id,
+        "parameters": {
+            "signWith": from_address,
+            "unsignedTransaction": unsigned_tx.hex(),
+            "hashFunction": "HASH_FUNCTION_KECCAK256",
+        },
+    }
+    body_json = json.dumps(body, separators=(",", ":"))
+    stamp = _stamp(body_json)
+
+    resp = httpx.post(
+        f"{_BASE_URL}/public/v1/submit/sign_transaction",
+        content=body_json,
+        headers={"Content-Type": "application/json", "X-Stamp": stamp},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    signed_tx = (
+        data.get("activity", {})
+        .get("result", {})
+        .get("signTransactionResult", {})
+        .get("signedTransaction", "")
+    )
+    if not signed_tx:
+        raise RuntimeError(f"Turnkey signing failed: {data}")
+
+    tx_hash = _rpc_call(rpc_url, "eth_sendRawTransaction", [f"0x{signed_tx}"])
+    return tx_hash
+
 
 def _stamp(body_json: str) -> str:
     """
@@ -35,14 +149,12 @@ def _stamp(body_json: str) -> str:
 
     sig_der = private_key.sign(body_json.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
 
-    # DER → fixed-width (r || s) so the server can verify it
-    r, s = decode_dss_signature(sig_der)
-    sig_bytes = r.to_bytes(32, "big") + s.to_bytes(32, "big")
-    sig_b64 = base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode()
+    # Hex-encode the DER signature bytes for Turnkey
+    sig_hex = sig_der.hex()
 
     envelope = {
         "publicKey": settings.TURNKEY_API_PUBLIC_KEY,
-        "signature": sig_b64,
+        "signature": sig_hex,
         "scheme": "SIGNATURE_SCHEME_TK_API_P256",
     }
     envelope_json = json.dumps(envelope, separators=(",", ":"))
@@ -69,7 +181,21 @@ def create_wallet(phone_number: str) -> dict[str, str]:
         "organizationId": settings.TURNKEY_ORG_ID,
         "parameters": {
             "subOrganizationName": f"cymatic-{phone_number}",
-            "rootUsers": [],
+            "rootUsers": [
+                {
+                    "userName": "backend-api",
+                    "userEmail": "api@cymatic.local",
+                    "apiKeys": [
+                        {
+                            "apiKeyName": "parent-key",
+                            "publicKey": settings.TURNKEY_API_PUBLIC_KEY,
+                            "curveType": "API_KEY_CURVE_P256",
+                        }
+                    ],
+                    "authenticators": [],
+                    "oauthProviders": [],
+                }
+            ],
             "rootQuorumThreshold": 1,
             "wallet": {
                 "walletName": "Default Wallet",
