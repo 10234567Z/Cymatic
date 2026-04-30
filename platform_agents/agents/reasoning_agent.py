@@ -18,6 +18,10 @@ TOKEN_BY_SYMBOL_AND_CHAIN = {
         "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         "USDT": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
     },
+    "84532": {
+        # Base Sepolia testnet
+        "USDC": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    },
     "42161": {
         "USDC": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         "USDT": "0xFd086bC7CD5C481DCC9C85ebe478A1C0b69FCbb9",
@@ -30,19 +34,55 @@ class ReasoningAgent:
         self.transport = transport
         self.zg = zg
 
+    _GOODBYE_WORDS = {"bye", "goodbye", "hang up", "end call", "that's all", "thats all", "done", "quit", "exit", "stop", "nothing", "no thanks", "no thank you"}
+
+    def _is_goodbye(self, text: str) -> bool:
+        lower = text.lower().strip()
+        return any(word in lower for word in self._GOODBYE_WORDS)
+
     def handle(self, message: AXLMessage) -> dict[str, Any]:
+        import logging
+        log = logging.getLogger("reasoning_agent")
         transcript = str(message.payload.get("transcript", ""))
         caller = str(message.payload.get("caller", "unknown"))
-        intent_data = self.zg.infer_intent(transcript)
+        wallet_address = str(message.payload.get("walletAddress", ""))
+        sub_org_id = str(message.payload.get("subOrgId", ""))
+        log.warning("[reasoning] transcript=%r", transcript)
+
+        if self._is_goodbye(transcript):
+            return {
+                "ok": True,
+                "intent": "goodbye",
+                "entities": {},
+                "spokenText": "Goodbye! Have a great day.",
+                "hangup": True,
+            }
+
+        try:
+            intent_data = self.zg.infer_intent(transcript)
+        except Exception as exc:
+            log.error("[reasoning] LLM infer_intent failed: %s", exc)
+            return {"ok": False, "error": f"LLM failed: {exc}"}
+        log.warning("[reasoning] intent_data=%s", intent_data)
         intent = str(intent_data.get("intent", "check_token_balance"))
         entities = dict(intent_data.get("entities", {}))
+
+        # General questions — answer directly, skip execution pipeline
+        if intent == "general_query":
+            answer = str(entities.get("answer", "I'm not sure about that, but I'm here to help with your crypto wallet."))
+            return {
+                "ok": True,
+                "intent": "general_query",
+                "entities": entities,
+                "spokenText": answer,
+            }
         addresses = re.findall(r"0x[a-fA-F0-9]{40}", transcript)
         if addresses:
             entities.setdefault("address", addresses[0])
         if len(addresses) > 1:
             entities.setdefault("toAddress", addresses[1])
 
-        execution_input = self._build_execution_input(intent, entities)
+        execution_input = self._build_execution_input(intent, entities, wallet_address, sub_org_id)
 
         exec_msg = AXLMessage(
             trace_id=message.trace_id,
@@ -57,7 +97,9 @@ class ReasoningAgent:
             },
         )
         exec_result = self.transport.send(exec_msg)
+        log.warning("[reasoning] exec_result=%s", exec_result)
         if not exec_result.get("ok"):
+            log.error("[reasoning] execution failed: %s", exec_result.get("error"))
             return {
                 "ok": False,
                 "intent": intent,
@@ -86,7 +128,7 @@ class ReasoningAgent:
             "spokenText": response_result.get("spokenText", "Request completed."),
         }
 
-    def _build_execution_input(self, intent: str, entities: dict[str, Any]) -> dict[str, Any]:
+    def _build_execution_input(self, intent: str, entities: dict[str, Any], wallet_address: str = "", sub_org_id: str = "") -> dict[str, Any]:
         chain_id = str(entities.get("chainId", "1"))
         token = str(entities.get("token", "USDC")).upper()
         default_addr = "0x0000000000000000000000000000000000000000"
@@ -103,10 +145,11 @@ class ReasoningAgent:
         if intent == "transfer_erc20":
             return {
                 "chainId": chain_id,
+                "fromAddress": wallet_address,
+                "subOrgId": sub_org_id,
                 "toAddress": entities.get("toAddress", default_addr),
                 "tokenAddress": token_addr,
                 "amount": entities.get("amount", "1"),
-                "walletId": entities.get("walletId", ""),
             }
         if intent == "check_aave_health":
             return {

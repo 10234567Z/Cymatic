@@ -61,7 +61,9 @@ class InferenceClient:
     """Plain OpenAI-compatible inference client (LLM, STT, TTS)."""
 
     def __init__(self) -> None:
-        self.base_url = os.environ["OPENAI_BASE_URL"].rstrip("/")
+        base = os.environ["OPENAI_BASE_URL"].rstrip("/")
+        # Strip trailing /v1 so we can append it consistently below
+        self.base_url = base[:-3] if base.endswith("/v1") else base
         self.api_key = os.environ["OPENAI_API_KEY"]
         self.llm_model = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini")
         self.stt_model = os.getenv("OPENAI_STT_MODEL", "whisper-1")
@@ -83,10 +85,15 @@ class InferenceClient:
                     {
                         "role": "system",
                         "content": (
+                            "You are a helpful voice assistant for Cymatic, a crypto wallet app. "
                             "Extract intent and entities from the user text. "
                             "Reply with compact JSON: {intent, entities, confidence}. "
                             "Supported intents: check_token_balance, transfer_erc20, "
-                            "check_aave_health, monitor_aave_health."
+                            "check_aave_health, monitor_aave_health, general_query. "
+                            "Use general_query for anything not related to the above crypto actions "
+                            "(e.g. weather, trivia, greetings, jokes, recommendations). "
+                            "For general_query, include an 'answer' field in entities with a concise, "
+                            "friendly, voice-appropriate response to the question."
                         ),
                     },
                     {"role": "user", "content": text},
@@ -135,10 +142,11 @@ class InferenceClient:
         if intent == "monitor_aave_health":
             return "Aave health monitoring is now active."
         if intent == "transfer_erc20":
-            tx_hash = (execution_result.get("output") or {}).get("txHash")
+            output = (execution_result.get("output") or {})
+            tx_hash = output.get("txHash")
             if tx_hash:
                 return f"Transfer complete. Transaction hash starts with {tx_hash[:10]}."
-            return "Transfer request submitted."
+            return "Transfer submitted."
         return "Request completed."
 
     def text_to_twilio_mulaw_payloads(self, text: str) -> list[str]:

@@ -4,11 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-: "${OPENAI_BASE_URL:=http://localhost}"
-: "${OPENAI_API_KEY:=test}"
-: "${KEEPERHUB_API_KEY:=test}"
-
-export OPENAI_BASE_URL OPENAI_API_KEY KEEPERHUB_API_KEY
+# Load backend .env so all vars are available to child processes
+if [ -f "$ROOT_DIR/../backend/.env" ]; then
+  set -a; source "$ROOT_DIR/../backend/.env"; set +a
+fi
 
 echo "Starting MCP adapter on :7101"
 uvicorn mcp_server:app --host 127.0.0.1 --port 7101 &

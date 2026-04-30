@@ -23,6 +23,8 @@ class ProcessTextRequest(BaseModel):
     callSid: str
     caller: str
     text: str
+    walletAddress: str = ""
+    subOrgId: str = ""
 
 
 class ProcessTwilioEventRequest(BaseModel):
@@ -52,6 +54,8 @@ def voice_process_text(request: ProcessTextRequest) -> dict[str, Any]:
         call_sid=request.callSid,
         caller=request.caller,
         text=request.text,
+        wallet_address=request.walletAddress,
+        sub_org_id=request.subOrgId,
     )
 
 

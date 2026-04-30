@@ -17,7 +17,10 @@ class VoiceAgent:
         self.inft = inft or CallerINFTClient()
         self._sessions: dict[str, dict[str, Any]] = {}
 
-    def process_text(self, call_sid: str, caller: str, text: str) -> dict[str, Any]:
+    def process_text(self, call_sid: str, caller: str, text: str, wallet_address: str = "", sub_org_id: str = "") -> dict[str, Any]:
+        import logging
+        log = logging.getLogger("voice_agent")
+        log.warning("[process_text] transcript=%r caller=%s", text, caller)
         trace_id = str(uuid.uuid4())
         caller_profile = self.inft.get_caller_profile_summary(caller)
         reasoning_result = self.transport.send(
@@ -31,10 +34,14 @@ class VoiceAgent:
                     "caller": caller,
                     "transcript": text,
                     "callerProfile": caller_profile,
+                    "walletAddress": wallet_address,
+                    "subOrgId": sub_org_id,
                 },
             )
         )
+        log.warning("[process_text] reasoning_result=%s", reasoning_result)
         if not reasoning_result.get("ok"):
+            log.error("[process_text] reasoning failed: %s", reasoning_result.get("error"))
             return {
                 "ok": False,
                 "traceId": trace_id,
@@ -44,7 +51,13 @@ class VoiceAgent:
             }
 
         spoken_text = reasoning_result.get("spokenText", "Request completed.")
-        media_payloads = self.zg.text_to_twilio_mulaw_payloads(spoken_text)
+        hangup = reasoning_result.get("hangup", False)
+        log.warning("[process_text] spoken_text=%r hangup=%s", spoken_text, hangup)
+        try:
+            media_payloads = self.zg.text_to_twilio_mulaw_payloads(spoken_text)
+        except Exception as exc:
+            log.error("[process_text] TTS failed: %s", exc)
+            media_payloads = []
         return {
             "ok": True,
             "traceId": trace_id,
@@ -53,6 +66,7 @@ class VoiceAgent:
             "selectedWorkflow": reasoning_result.get("selectedWorkflow"),
             "execution": reasoning_result.get("execution"),
             "responseText": spoken_text,
+            "hangup": hangup,
             "twilioMediaPayloads": media_payloads,
         }
 
