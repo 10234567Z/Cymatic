@@ -20,8 +20,12 @@ from app.core import session as session_store
 from app.core.twilio_security import validate_twilio_signature
 from app.models.session import CallState
 from app.models.user import NewUserInput
+import traceback
+import threading
+
 from app.services import supabase_client
 from app.services.turnkey import create_wallet
+from app.services.inft import mint_caller_inft
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 
@@ -120,13 +124,18 @@ async def pin(
                 wallet_address=wallet["address"],
                 sub_org_id=wallet["sub_org_id"],
             )
+            # Mint iNFT in background — don't block the call
+            threading.Thread(
+                target=mint_caller_inft,
+                args=(wallet["address"], sess.phone_number),
+                daemon=True,
+            ).start()
             _chat_gather(
                 vr,
                 "Your vault is ready. "
                 "What would you want me to do?",
             )
         except Exception as exc:
-            import traceback
             traceback.print_exc()
             print(f"[vault setup error] {exc}")
             vr.say("We couldn't set up your vault right now. Please call back.")

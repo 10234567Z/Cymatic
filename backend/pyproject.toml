@@ -15,4 +15,5 @@ dependencies = [
     "supabase>=2.29.0",
     "twilio>=9.10.5",
     "uvicorn[standard]>=0.46.0",
+    "web3>=7.0.0",
 ]
