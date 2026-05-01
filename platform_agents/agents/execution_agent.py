@@ -133,17 +133,6 @@ class ExecutionAgent:
             pass
         return None
 
-    def _resolve_key_id(self, wallet_address: str) -> tuple[str, str] | None:
-        """Look up a Cymatic user's private key ID and sub_org_id by wallet address."""
-        try:
-            resp = httpx.get(f"{_BACKEND_URL}/execution/users/key-id/{wallet_address}", timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                return (data.get("privateKeyId"), data.get("subOrgId"))
-        except Exception:
-            pass
-        return None
-
     def _handle_transfer(self, execution_input: dict[str, Any]) -> dict[str, Any]:
         sub_org_id = execution_input.get("subOrgId", "")
         from_address = execution_input.get("fromAddress", "")
@@ -171,18 +160,6 @@ class ExecutionAgent:
                 "error": "Wallet not set up for signing. Please call back and re-register.",
             }
 
-        # Resolve wallet address → private key ID and sub_org_id
-        key_info = self._resolve_key_id(from_address)
-        if not key_info:
-            return {
-                "ok": False,
-                "intent": "transfer_erc20",
-                "error": "Could not retrieve signing credentials. Please call back.",
-            }
-        private_key_id, resolved_sub_org_id = key_info
-        if not sub_org_id:
-            sub_org_id = resolved_sub_org_id
-
         if not to_address:
             return {
                 "ok": False,
@@ -206,7 +183,7 @@ class ExecutionAgent:
                     "token_address": token_address,
                     "amount_units": amount_units,
                     "chain_id": chain_id,
-                    "private_key_id": private_key_id,
+                    "private_key_id": "",  # Not used — Turnkey signs with address
                 },
                 timeout=45.0,
             )

@@ -149,7 +149,7 @@ async def pin(
                     turnkey_wallet_id=wallet["wallet_id"],
                     wallet_address=wallet["address"],
                     sub_org_id=wallet["sub_org_id"],
-                    private_key_id=wallet["private_key_id"],
+                    private_key_id="",
                 )
             )
             session_store.update(
@@ -275,8 +275,15 @@ async def chat(
         spoken = "Sorry, I had trouble processing that. Please try again."
         hangup = False
 
+    # Get or re-initialize session
+    sess = session_store.get(CallSid)
+    if not sess:
+        vr.say("Your session has expired. Please call back.")
+        vr.hangup()
+        return _xml(vr)
+
     # Log agent's reply
-    conversation = list(session_store.get(CallSid).conversation)
+    conversation = list(sess.conversation)
     conversation.append({"role": "agent", "text": spoken})
     session_store.update(CallSid, conversation=conversation)
 

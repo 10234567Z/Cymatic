@@ -9,7 +9,6 @@ class UserRecord(BaseModel):
     turnkey_wallet_id: str
     wallet_address: str
     sub_org_id: Optional[str] = None
-    private_key_id: Optional[str] = None
     inft_token_id: Optional[str] = None
     inft_contract: Optional[str] = None
     is_active: bool = True
@@ -21,4 +20,4 @@ class NewUserInput(BaseModel):
     turnkey_wallet_id: str
     wallet_address: str
     sub_org_id: str
-    private_key_id: str
+    private_key_id: str = ""

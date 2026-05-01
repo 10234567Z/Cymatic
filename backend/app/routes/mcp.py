@@ -136,20 +136,6 @@ async def get_wallet_by_phone(phone: str):
     return {"phone": phone, "walletAddress": user.wallet_address}
 
 
-@router.get("/users/key-id/{wallet_address}")
-async def get_key_id_by_wallet(wallet_address: str):
-    """Look up a Cymatic user's private key ID by wallet address."""
-    from app.services.supabase_client import get_user_by_wallet_address
-    user = await get_user_by_wallet_address(wallet_address)
-    if not user or not user.private_key_id:
-        raise HTTPException(status_code=404, detail=f"No private key ID found for {wallet_address}")
-    return {
-        "walletAddress": wallet_address,
-        "privateKeyId": user.private_key_id,
-        "subOrgId": user.sub_org_id,
-    }
-
-
 class InternalBalanceRequest(BaseModel):
     address: str
     token_address: str
