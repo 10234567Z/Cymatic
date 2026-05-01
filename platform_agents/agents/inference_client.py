@@ -93,7 +93,11 @@ class InferenceClient:
                             "Use general_query for anything not related to the above crypto actions "
                             "(e.g. weather, trivia, greetings, jokes, recommendations). "
                             "For general_query, include an 'answer' field in entities with a concise, "
-                            "friendly, voice-appropriate response to the question."
+                            "friendly, voice-appropriate response to the question. "
+                            "For transfer_erc20: extract 'amount', 'token', and either 'toAddress' "
+                            "(0x hex address) or 'toPhone' (phone number like +1234567890). "
+                            "If the user says 'send to [phone number]', set toPhone to that number "
+                            "with country code (e.g. +917382120692)."
                         ),
                     },
                     {"role": "user", "content": text},

@@ -53,6 +53,10 @@ class ExecutionAgent:
         if intent == "transfer_erc20":
             return self._handle_transfer(payload.get("executionInput", {}))
 
+        # Balance check is handled directly via backend RPC call
+        if intent == "check_token_balance":
+            return self._handle_balance(payload.get("executionInput", {}))
+
         workflow_meta = INTENT_TO_MATCH.get(intent, INTENT_TO_MATCH["check_token_balance"])
 
         selected = self.keeperhub.select_workflow(
@@ -80,11 +84,64 @@ class ExecutionAgent:
             "execution": result,
         }
 
+    def _handle_balance(self, execution_input: dict[str, Any]) -> dict[str, Any]:
+        address = execution_input.get("address", "")
+        token_address = execution_input.get("tokenAddress", "")
+        chain_id = int(execution_input.get("chainId", 8453))
+
+        if not address or not token_address:
+            return {"ok": False, "intent": "check_token_balance", "error": "Missing address or tokenAddress in executionInput"}
+
+        try:
+            resp = httpx.post(
+                f"{_BACKEND_URL}/execution/internal/balance",
+                json={"address": address, "token_address": token_address, "chain_id": chain_id},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "ok": True,
+                "intent": "check_token_balance",
+                "selectedWorkflow": None,
+                "execution": {
+                    "workflowId": None,
+                    "executionId": None,
+                    "status": "success",
+                    "output": data,
+                    "error": None,
+                },
+            }
+        except Exception as e:
+            return {"ok": False, "intent": "check_token_balance", "error": str(e)}
+
+    def _resolve_to_address(self, to_phone: str) -> str | None:
+        """Look up a Cymatic user's wallet address by phone number."""
+        try:
+            resp = httpx.get(f"{_BACKEND_URL}/execution/users/wallet/{to_phone}", timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get("walletAddress")
+        except Exception:
+            pass
+        return None
+
     def _handle_transfer(self, execution_input: dict[str, Any]) -> dict[str, Any]:
         sub_org_id = execution_input.get("subOrgId", "")
         from_address = execution_input.get("fromAddress", "")
         to_address = execution_input.get("toAddress", "")
+        to_phone = execution_input.get("toPhone", "")
         token_address = execution_input.get("tokenAddress", "")
+
+        # Resolve phone → wallet address if toAddress not provided
+        if not to_address and to_phone:
+            resolved = self._resolve_to_address(to_phone)
+            if not resolved:
+                return {
+                    "ok": False,
+                    "intent": "transfer_erc20",
+                    "error": f"No Cymatic wallet found for {to_phone}. They need to register first.",
+                }
+            to_address = resolved
         amount_str = str(execution_input.get("amount", "1"))
         chain_id = int(execution_input.get("chainId", 8453))
 
@@ -93,6 +150,13 @@ class ExecutionAgent:
                 "ok": False,
                 "intent": "transfer_erc20",
                 "error": "Wallet not set up for signing. Please call back and re-register.",
+            }
+
+        if not to_address:
+            return {
+                "ok": False,
+                "intent": "transfer_erc20",
+                "error": "No destination address or phone number provided.",
             }
 
         decimals = _TOKEN_DECIMALS.get(token_address.lower(), 18)

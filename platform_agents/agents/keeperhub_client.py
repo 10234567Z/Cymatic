@@ -63,7 +63,10 @@ class KeeperHubWorkflowClient:
             if best is None or score > best[0]:
                 best = (score, workflow)
 
-        if not best or best[0] <= 0:
+        if not best:
+            return None
+        # If no pattern matched but only one workflow exists, use it
+        if best[0] <= 0 and len(workflows) > 1:
             return None
         return best[1]
 

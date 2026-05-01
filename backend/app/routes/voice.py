@@ -219,7 +219,7 @@ async def chat(
             )
             resp.raise_for_status()
             result = resp.json()
-        import logging; logging.getLogger("voice").warning("[chat] platform_agents result: %s", result)
+        import logging; logging.getLogger("voice").warning("[chat] platform_agents result: %s", {k: v for k, v in result.items() if k != "twilioMediaPayloads"})
         spoken = result.get("responseText") or "Request completed."
         hangup = result.get("hangup", False)
     except Exception as exc:

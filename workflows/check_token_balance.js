@@ -4,10 +4,11 @@ async function actionStep(input) {
   const { chainId, address, tokenAddress } = input;
   
   const rpcUrls = {
-    1: "https://eth.rpc.com",
-    8453: "https://base-rpc.publicnode.com",
-    42161: "https://arb-rpc.arbitrum.io/public",
-    137: "https://polygon-rpc.com"
+    1: "https://cloudflare-eth.com",
+    8453: "https://mainnet.base.org",
+    84532: "https://sepolia.base.org",
+    42161: "https://arb1.arbitrum.io/rpc",
+    137: "https://polygon-rpc.com",
   };
   
   const rpcUrl = rpcUrls[chainId];

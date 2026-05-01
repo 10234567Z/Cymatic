@@ -82,6 +82,13 @@ class ReasoningAgent:
         if len(addresses) > 1:
             entities.setdefault("toAddress", addresses[1])
 
+        # Extract phone numbers (e.g. "+917382120692" or spoken digits grouped as phone)
+        phones = re.findall(r"\+?\d[\d\s\-]{7,14}\d", transcript)
+        phones = ["".join(filter(str.isdigit, p)) for p in phones]
+        phones = ["+" + p if not p.startswith("+") else p for p in phones if len(p) >= 8]
+        if phones and intent == "transfer_erc20" and not entities.get("toAddress"):
+            entities.setdefault("toPhone", phones[0])
+
         execution_input = self._build_execution_input(intent, entities, wallet_address, sub_org_id)
 
         exec_msg = AXLMessage(
@@ -129,7 +136,7 @@ class ReasoningAgent:
         }
 
     def _build_execution_input(self, intent: str, entities: dict[str, Any], wallet_address: str = "", sub_org_id: str = "") -> dict[str, Any]:
-        chain_id = str(entities.get("chainId", "1"))
+        chain_id = str(entities.get("chainId", "8453"))
         token = str(entities.get("token", "USDC")).upper()
         default_addr = "0x0000000000000000000000000000000000000000"
         token_addr = TOKEN_BY_SYMBOL_AND_CHAIN.get(chain_id, TOKEN_BY_SYMBOL_AND_CHAIN["1"]).get(token)
@@ -139,7 +146,7 @@ class ReasoningAgent:
         if intent == "check_token_balance":
             return {
                 "chainId": chain_id,
-                "address": entities.get("address", default_addr),
+                "address": entities.get("address") or wallet_address or default_addr,
                 "tokenAddress": token_addr,
             }
         if intent == "transfer_erc20":
@@ -147,7 +154,8 @@ class ReasoningAgent:
                 "chainId": chain_id,
                 "fromAddress": wallet_address,
                 "subOrgId": sub_org_id,
-                "toAddress": entities.get("toAddress", default_addr),
+                "toAddress": entities.get("toAddress", ""),
+                "toPhone": entities.get("toPhone", ""),
                 "tokenAddress": token_addr,
                 "amount": entities.get("amount", "1"),
             }
