@@ -6,6 +6,7 @@ The MockVerifier accepts any bytes as proof, so we pass a SHA-256 hash
 of the phone number as the proof data.
 """
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -30,7 +31,7 @@ _MINT_ABI = [
 _OG_CHAIN_ID = 16602
 
 
-def mint_caller_inft(wallet_address: str, phone_number: str) -> dict:
+def mint_caller_inft(wallet_address: str, phone_number: str, user_id: str = "") -> dict:
     """
     Mint a CallerINFT for a new user. Runs synchronously — call from a background thread.
 
@@ -97,8 +98,17 @@ def mint_caller_inft(wallet_address: str, phone_number: str) -> dict:
             "txHash": tx_hash.hex(),
             "tokenId": token_id,
             "walletAddress": wallet_address,
+            "userId": user_id,
         }
         log.warning("[inft] mint result: %s", result)
+
+        # Persist tokenId + contract address back to Supabase
+        if result["ok"] and token_id is not None and result.get("userId"):
+            from app.services.supabase_client import update_inft
+            contract_addr = os.getenv("CALLER_INFT_ADDRESS", "")
+            asyncio.run(update_inft(result["userId"], str(token_id), contract_addr))
+            log.warning("[inft] saved tokenId=%s to user %s", token_id, result["userId"])
+
         return result
 
     except Exception as exc:

@@ -20,6 +20,19 @@ async def get_user_by_phone(phone_number: str) -> UserRecord | None:
     return UserRecord(**response.data)
 
 
+async def get_user_by_wallet_address(wallet_address: str) -> UserRecord | None:
+    response = await asyncio.to_thread(
+        lambda: _client.table("users")
+        .select("*")
+        .eq("wallet_address", wallet_address)
+        .maybe_single()
+        .execute()
+    )
+    if response is None or not response.data:
+        return None
+    return UserRecord(**response.data)
+
+
 async def create_user(payload: NewUserInput) -> UserRecord:
     response = await asyncio.to_thread(
         lambda: _client.table("users")

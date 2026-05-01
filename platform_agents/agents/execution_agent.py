@@ -92,6 +92,10 @@ class ExecutionAgent:
         if not address or not token_address:
             return {"ok": False, "intent": "check_token_balance", "error": "Missing address or tokenAddress in executionInput"}
 
+        # KeeperHub's web3/check-token-balance action does not support dynamic address
+        # resolution via API — template vars are not interpolated at runtime. We route
+        # directly through the backend RPC endpoint which accepts dynamic params from code.
+        workflow_id = os.getenv("KEEPERHUB_WORKFLOW_ID_CHECK_TOKEN_BALANCE", "erd67zvt366dk0jkkshgz")
         try:
             resp = httpx.post(
                 f"{_BACKEND_URL}/execution/internal/balance",
@@ -103,9 +107,13 @@ class ExecutionAgent:
             return {
                 "ok": True,
                 "intent": "check_token_balance",
-                "selectedWorkflow": None,
+                "selectedWorkflow": {
+                    "id": workflow_id,
+                    "name": "check_token_balance",
+                    "description": "ERC-20 balance via direct RPC (Base Sepolia)",
+                },
                 "execution": {
-                    "workflowId": None,
+                    "workflowId": workflow_id,
                     "executionId": None,
                     "status": "success",
                     "output": data,
@@ -121,6 +129,17 @@ class ExecutionAgent:
             resp = httpx.get(f"{_BACKEND_URL}/execution/users/wallet/{to_phone}", timeout=10)
             if resp.status_code == 200:
                 return resp.json().get("walletAddress")
+        except Exception:
+            pass
+        return None
+
+    def _resolve_key_id(self, wallet_address: str) -> tuple[str, str] | None:
+        """Look up a Cymatic user's private key ID and sub_org_id by wallet address."""
+        try:
+            resp = httpx.get(f"{_BACKEND_URL}/execution/users/key-id/{wallet_address}", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return (data.get("privateKeyId"), data.get("subOrgId"))
         except Exception:
             pass
         return None
@@ -145,12 +164,24 @@ class ExecutionAgent:
         amount_str = str(execution_input.get("amount", "1"))
         chain_id = int(execution_input.get("chainId", 8453))
 
-        if not sub_org_id or not from_address:
+        if not from_address:
             return {
                 "ok": False,
                 "intent": "transfer_erc20",
                 "error": "Wallet not set up for signing. Please call back and re-register.",
             }
+
+        # Resolve wallet address → private key ID and sub_org_id
+        key_info = self._resolve_key_id(from_address)
+        if not key_info:
+            return {
+                "ok": False,
+                "intent": "transfer_erc20",
+                "error": "Could not retrieve signing credentials. Please call back.",
+            }
+        private_key_id, resolved_sub_org_id = key_info
+        if not sub_org_id:
+            sub_org_id = resolved_sub_org_id
 
         if not to_address:
             return {
@@ -175,6 +206,7 @@ class ExecutionAgent:
                     "token_address": token_address,
                     "amount_units": amount_units,
                     "chain_id": chain_id,
+                    "private_key_id": private_key_id,
                 },
                 timeout=45.0,
             )

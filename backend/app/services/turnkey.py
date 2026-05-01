@@ -72,6 +72,7 @@ def sign_and_broadcast_erc20(
     token_address: str,
     amount_units: int,
     chain_id: int,
+    private_key_id: str,
 ) -> str:
     """Sign an ERC20 transfer via Turnkey and broadcast it. Returns tx hash."""
     rpc_url = _CHAIN_RPC.get(str(chain_id))
@@ -102,11 +103,11 @@ def sign_and_broadcast_erc20(
     ])
 
     body: dict[str, Any] = {
-        "type": "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
+        "type": "ACTIVITY_TYPE_SIGN_TRANSACTION",
         "timestampMs": str(int(time.time() * 1000)),
         "organizationId": sub_org_id,
         "parameters": {
-            "signWith": from_address,
+            "privateKeyId": private_key_id,
             "unsignedTransaction": unsigned_tx.hex(),
             "hashFunction": "HASH_FUNCTION_KECCAK256",
         },
@@ -120,7 +121,12 @@ def sign_and_broadcast_erc20(
         headers={"Content-Type": "application/json", "X-Stamp": stamp},
         timeout=30.0,
     )
-    resp.raise_for_status()
+    if not resp.is_success:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise RuntimeError(f"Turnkey sign_transaction {resp.status_code}: {detail}")
     data = resp.json()
     signed_tx = (
         data.get("activity", {})
@@ -159,6 +165,41 @@ def _stamp(body_json: str) -> str:
     }
     envelope_json = json.dumps(envelope, separators=(",", ":"))
     return base64.urlsafe_b64encode(envelope_json.encode()).rstrip(b"=").decode()
+
+
+def get_wallet_private_key_id(sub_org_id: str, wallet_id: str) -> str:
+    """
+    Fetch a wallet's first private key ID from Turnkey.
+    Uses Turnkey's read API to get wallet details.
+    """
+    body: dict[str, Any] = {
+        "organizationId": sub_org_id,
+        "walletId": wallet_id,
+    }
+    body_json = json.dumps(body, separators=(",", ":"))
+    stamp = _stamp(body_json)
+
+    try:
+        resp = httpx.post(
+            f"{_BASE_URL}/public/v1/read/wallet",
+            content=body_json,
+            headers={"Content-Type": "application/json", "X-Stamp": stamp},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Navigate: wallet -> accounts[0] -> privateKeys[0] -> privateKeyId
+        wallet = data.get("wallet", {})
+        accounts = wallet.get("accounts", [])
+        if accounts:
+            private_keys = accounts[0].get("privateKeys", [])
+            if private_keys:
+                return private_keys[0].get("privateKeyId", "")
+    except Exception as e:
+        print(f"[turnkey] Failed to fetch private_key_id: {e}")
+    
+    return ""
 
 
 def create_wallet(phone_number: str) -> dict[str, str]:
@@ -241,10 +282,14 @@ def create_wallet(phone_number: str) -> dict[str, str]:
     address = addresses[0] if addresses else ""
 
     if not wallet_id or not address:
-        raise RuntimeError(f"Turnkey wallet creation failed: {data}")
+        raise RuntimeError(f"Turnkey wallet creation failed: missing wallet_id/address. {data}")
+
+    # Fetch the private key ID from Turnkey
+    private_key_id = get_wallet_private_key_id(sub_org_id, wallet_id)
 
     return {
         "sub_org_id": sub_org_id,
         "wallet_id": wallet_id,
         "address": address,
+        "private_key_id": private_key_id,
     }

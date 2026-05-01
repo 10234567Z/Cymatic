@@ -5,31 +5,65 @@ Flow:
   POST /voice/inbound  — Twilio rings → detect new/existing user → ask for PIN
   POST /voice/pin      — DTMF digits arrive → verify or create user + wallet
   POST /voice/chat     — Twilio posts speech transcript → call agents → speak reply → listen again
+  POST /voice/status   — Twilio call-status callback → send SMS summary on call end
 """
 
+import logging
+import traceback
+import threading
 from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import Response
+from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import Gather, VoiceResponse
 
 from app.config import settings
 from app.core import auth
 from app.core import session as session_store
 from app.core.twilio_security import validate_twilio_signature
-from app.models.session import CallState
+from app.models.session import CallSession, CallState
 from app.models.user import NewUserInput
-import traceback
-import threading
-
 from app.services import supabase_client
 from app.services.turnkey import create_wallet
 from app.services.inft import mint_caller_inft
 
+log = logging.getLogger("voice")
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 MAX_PIN_ATTEMPTS = 3
+
+
+def _send_call_summary(sess: CallSession) -> None:
+    """Send an SMS to the caller with their wallet address + conversation recap."""
+    try:
+        lines = [
+            "-- Cymatic Call Summary --",
+            f"Wallet: {sess.wallet_address or 'not set'}",
+            "",
+        ]
+        if sess.conversation:
+            for turn in sess.conversation:
+                prefix = "You" if turn["role"] == "user" else "Cymatic"
+                lines.append(f"{prefix}: {turn['text']}")
+        else:
+            lines.append("No conversation recorded.")
+
+        body = "\n".join(lines)
+        # Twilio SMS has a 1600-char limit — truncate gracefully
+        if len(body) > 1580:
+            body = body[:1577] + "..."
+
+        client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        client.messages.create(
+            to=sess.phone_number,
+            from_=settings.TWILIO_PHONE_NUMBER,
+            body=body,
+        )
+        log.warning("[sms] summary sent to %s", sess.phone_number)
+    except Exception as exc:
+        log.error("[sms] failed to send summary: %s", exc)
 
 
 def _chat_gather(vr: VoiceResponse, prompt: str) -> None:
@@ -38,14 +72,14 @@ def _chat_gather(vr: VoiceResponse, prompt: str) -> None:
         input="speech",
         action=f"{settings.BASE_URL}/voice/chat",
         method="POST",
-        speechTimeout="auto",
+        speechTimeout="1",       # wait 3 s of silence before cutting off (was "auto" ~1 s)
+        speechModel="phone_call",
+        timeout=10,               # wait up to 10 s for the user to start speaking
+        actionOnEmptyResult=True, # still POST to /chat even if nothing heard (so we re-prompt)
         language="en-US",
     )
     gather.say(prompt)
     vr.append(gather)
-    # Fallback if nothing was heard
-    vr.say("I didn't catch that. Goodbye.")
-    vr.hangup()
 
 
 def _xml(vr: VoiceResponse) -> Response:
@@ -115,6 +149,7 @@ async def pin(
                     turnkey_wallet_id=wallet["wallet_id"],
                     wallet_address=wallet["address"],
                     sub_org_id=wallet["sub_org_id"],
+                    private_key_id=wallet["private_key_id"],
                 )
             )
             session_store.update(
@@ -127,7 +162,7 @@ async def pin(
             # Mint iNFT in background — don't block the call
             threading.Thread(
                 target=mint_caller_inft,
-                args=(wallet["address"], sess.phone_number),
+                args=(wallet["address"], sess.phone_number, user.id),
                 daemon=True,
             ).start()
             _chat_gather(
@@ -213,6 +248,11 @@ async def chat(
         _chat_gather(vr, "I didn't catch that. What would you like to do?")
         return _xml(vr)
 
+    # Log user's turn
+    conversation = list(sess.conversation)
+    conversation.append({"role": "user", "text": SpeechResult.strip()})
+    session_store.update(CallSid, conversation=conversation)
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -227,19 +267,55 @@ async def chat(
             )
             resp.raise_for_status()
             result = resp.json()
-        import logging; logging.getLogger("voice").warning("[chat] platform_agents result: %s", {k: v for k, v in result.items() if k != "twilioMediaPayloads"})
+        log.warning("[chat] platform_agents result: %s", {k: v for k, v in result.items() if k != "twilioMediaPayloads"})
         spoken = result.get("responseText") or "Request completed."
         hangup = result.get("hangup", False)
     except Exception as exc:
-        import logging, traceback
-        logging.getLogger("voice").error("[chat] platform_agents call failed: %s\n%s", exc, traceback.format_exc())
+        log.error("[chat] platform_agents call failed: %s\n%s", exc, traceback.format_exc())
         spoken = "Sorry, I had trouble processing that. Please try again."
         hangup = False
 
+    # Log agent's reply
+    conversation = list(session_store.get(CallSid).conversation)
+    conversation.append({"role": "agent", "text": spoken})
+    session_store.update(CallSid, conversation=conversation)
+
     if hangup:
         vr.say(spoken)
+        final_sess = session_store.get(CallSid)
         session_store.destroy(CallSid)
+        if final_sess:
+            threading.Thread(
+                target=_send_call_summary,
+                args=(final_sess,),
+                daemon=True,
+            ).start()
         vr.hangup()
     else:
         _chat_gather(vr, f"{spoken}  Anything else I can help you with?")
     return _xml(vr)
+
+
+@router.post("/status")
+async def call_status(
+    CallSid: Annotated[str, Form()],
+    CallStatus: Annotated[str, Form()] = "",
+) -> Response:
+    """
+    Twilio status callback — fired when call ends for any reason (hangup, drop, etc.).
+    Sends SMS summary if a session is still in memory (i.e. call ended without saying bye).
+    Configure in Twilio console: Voice → Phone Number → Call Status Callback URL
+    → {BASE_URL}/voice/status
+    """
+    terminal_statuses = {"completed", "busy", "failed", "no-answer", "canceled"}
+    if CallStatus.lower() in terminal_statuses:
+        sess = session_store.get(CallSid)
+        if sess:
+            session_store.destroy(CallSid)
+            if sess.state == CallState.AUTHENTICATED and sess.conversation:
+                threading.Thread(
+                    target=_send_call_summary,
+                    args=(sess,),
+                    daemon=True,
+                ).start()
+    return Response(status_code=204)

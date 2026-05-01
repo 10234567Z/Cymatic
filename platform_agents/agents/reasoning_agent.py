@@ -136,7 +136,7 @@ class ReasoningAgent:
         }
 
     def _build_execution_input(self, intent: str, entities: dict[str, Any], wallet_address: str = "", sub_org_id: str = "") -> dict[str, Any]:
-        chain_id = str(entities.get("chainId", "8453"))
+        chain_id = str(entities.get("chainId", "84532"))  # Base Sepolia testnet default
         token_raw = str(entities.get("token", "USDC")).upper().strip()
         # Fuzzy-correct common STT mishearings before lookup
         _TOKEN_ALIASES = {

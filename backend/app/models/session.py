@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Optional
 
@@ -17,3 +17,4 @@ class CallSession(BaseModel):
     wallet_address: Optional[str] = None # set once user is found/created
     sub_org_id: Optional[str] = None     # Turnkey sub-org for signing
     pin_attempts: int = 0
+    conversation: list[dict] = Field(default_factory=list)  # {"role": "user"|"agent", "text": "..."}
