@@ -137,11 +137,19 @@ class ReasoningAgent:
 
     def _build_execution_input(self, intent: str, entities: dict[str, Any], wallet_address: str = "", sub_org_id: str = "") -> dict[str, Any]:
         chain_id = str(entities.get("chainId", "8453"))
-        token = str(entities.get("token", "USDC")).upper()
+        token_raw = str(entities.get("token", "USDC")).upper().strip()
+        # Fuzzy-correct common STT mishearings before lookup
+        _TOKEN_ALIASES = {
+            "USBC": "USDC", "USSC": "USDC", "USD": "USDC", "USDС": "USDC",
+            "USDТ": "USDT", "USDT": "USDT",
+        }
+        token = _TOKEN_ALIASES.get(token_raw, token_raw)
         default_addr = "0x0000000000000000000000000000000000000000"
-        token_addr = TOKEN_BY_SYMBOL_AND_CHAIN.get(chain_id, TOKEN_BY_SYMBOL_AND_CHAIN["1"]).get(token)
+        chain_tokens = TOKEN_BY_SYMBOL_AND_CHAIN.get(chain_id, TOKEN_BY_SYMBOL_AND_CHAIN["8453"])
+        token_addr = chain_tokens.get(token)
         if not token_addr:
-            token_addr = TOKEN_BY_SYMBOL_AND_CHAIN["1"]["USDC"]
+            # Fall back to USDC on the same chain, not Ethereum USDC
+            token_addr = chain_tokens.get("USDC", TOKEN_BY_SYMBOL_AND_CHAIN["8453"]["USDC"])
 
         if intent == "check_token_balance":
             return {

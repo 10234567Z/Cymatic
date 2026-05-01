@@ -123,8 +123,7 @@ async def pin(
             _chat_gather(
                 vr,
                 "Your vault is ready. "
-                "You can check your balance, transfer tokens, or monitor your Aave position. "
-                "What would you like to do?",
+                "What would you want me to do?",
             )
         except Exception as exc:
             import traceback

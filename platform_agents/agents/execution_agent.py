@@ -178,7 +178,12 @@ class ExecutionAgent:
                 },
                 timeout=45.0,
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                try:
+                    detail = resp.json().get("detail", resp.text)
+                except Exception:
+                    detail = resp.text or f"HTTP {resp.status_code}"
+                return {"ok": False, "intent": "transfer_erc20", "error": detail}
             data = resp.json()
             return {
                 "ok": True,
