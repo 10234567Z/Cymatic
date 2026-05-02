@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     BASE_URL: str  # your public ngrok/server URL e.g. https://abc.ngrok.io
     PLATFORM_AGENTS_URL: str = "http://127.0.0.1:8100"
 
+    # Explorer / BaseScan
+    BASESCAN_API_KEY: str = ""
+    BASESCAN_BASE_URL: str = "https://api-sepolia.basescan.org/api"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

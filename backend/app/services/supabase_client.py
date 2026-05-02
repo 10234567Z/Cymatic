@@ -40,3 +40,34 @@ async def update_inft(user_id: str, token_id: str, contract: str) -> None:
             "inft_contract": contract,
         }).eq("id", user_id).execute()
     )
+
+
+async def list_wallet_users(limit: int = 100) -> list[dict]:
+    response = await asyncio.to_thread(
+        lambda: _client.table("users")
+        .select("id, phone_number, wallet_address")
+        .eq("is_active", True)
+        .limit(limit)
+        .execute()
+    )
+    if response is None or not response.data:
+        return []
+    return [item for item in response.data if item.get("wallet_address")]
+
+
+async def list_inft_users(limit: int = 300) -> list[dict]:
+    response = await asyncio.to_thread(
+        lambda: _client.table("users")
+        .select("id, phone_number, wallet_address, inft_token_id, inft_contract, created_at")
+        .eq("is_active", True)
+        .limit(limit)
+        .execute()
+    )
+    if response is None or not response.data:
+        return []
+
+    return [
+        item
+        for item in response.data
+        if item.get("wallet_address") and item.get("inft_token_id")
+    ]
